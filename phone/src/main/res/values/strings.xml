@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">CastLite</string>
+    <string name="notification_channel_name">Casting</string>
+    <string name="notification_channel_desc">Shown while CastLite is sharing media with a TV</string>
+</resources>
