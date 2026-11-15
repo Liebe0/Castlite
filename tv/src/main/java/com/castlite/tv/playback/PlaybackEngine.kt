@@ -17,6 +17,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.castlite.protocol.Command
 import com.castlite.protocol.MediaType
@@ -35,6 +38,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.IOException
 import kotlin.math.roundToInt
 
 /** Everything the TV screens render. */
@@ -114,10 +118,24 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     private var slideJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
+    /** Times the current item stopped early and was continued (see resumeIfEndedEarly). */
+    private var earlyEndRetries = 0
     private var overlayJob: Job? = null
     private var tickerJob: Job? = null
 
     init {
+        // Downloads that fail and get retried are otherwise invisible: note them for diagnostics.
+        player.addAnalyticsListener(object : AnalyticsListener {
+            override fun onLoadError(
+                eventTime: AnalyticsListener.EventTime,
+                loadEventInfo: LoadEventInfo,
+                mediaLoadData: MediaLoadData,
+                error: IOException,
+                wasCanceled: Boolean,
+            ) {
+                TvLog.log("load", "Download from byte ${loadEventInfo.dataSpec.position} failed: ${error.javaClass.simpleName} ${error.message}")
+            }
+        })
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (plan.musicMode) return // background music: the photos drive the state
@@ -129,6 +147,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
                         if (cleared.state == ReceiverState.LOADING) cleared.copy(state = if (player.playWhenReady) ReceiverState.PLAYING else ReceiverState.PAUSED) else cleared
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
+                    if (resumeIfEndedEarly()) return
                     advanceOrFinish()
                 }
             }
@@ -142,6 +161,12 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
                     showOverlay(autoHide = false)
                 }
                 syncPosition()
+            }
+
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+                    TvLog.log("seek", "Player moved ${oldPosition.positionMs} → ${newPosition.positionMs} ms (reason $reason, seekable=${player.isCurrentMediaItemSeekable})")
+                }
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -303,9 +328,36 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     fun seekTo(positionMs: Long) {
         if (cursor.current?.type == MediaType.IMAGE) return
-        player.seekTo(positionMs.coerceAtLeast(0))
+        val target = positionMs.coerceAtLeast(0)
+        TvLog.log("seek", "Seek to $target ms from ${player.currentPosition} ms (duration ${player.duration}, state ${player.playbackState}, seekable ${player.isCurrentMediaItemSeekable})")
+        // ExoPlayer "seeks" an unseekable stream by restarting it from 0:00. Keep playing instead.
+        if (!player.currentTimeline.isEmpty && !player.isCurrentMediaItemSeekable) {
+            TvLog.log("seek", "Ignored: this stream can't be seeked")
+            _ui.update { it.copy(warning = "This video can't be skipped through (the file has no index).") }
+            showOverlay()
+            return
+        }
+        earlyEndRetries = 0
+        player.seekTo(target)
         syncPosition()
         showOverlay()
+    }
+
+    /**
+     * ExoPlayer reached the end of the stream well before the end of the video: the phone
+     * stopped sending (connection cut, phone busy) rather than the video finishing. Carry on
+     * from there instead of moving on — with repeat on, that would restart at 0:00. A file
+     * whose real length is shorter than it claims ends for good after a couple of tries.
+     */
+    private fun resumeIfEndedEarly(): Boolean {
+        val duration = player.duration
+        val position = player.currentPosition
+        if (!EndCheck.isPremature(position, duration) || earlyEndRetries >= EARLY_END_RETRIES) return false
+        earlyEndRetries++
+        TvLog.log("player", "Stream ended at $position ms of $duration ms — continuing from there (try $earlyEndRetries)")
+        player.seekTo(position)
+        player.playWhenReady = true
+        return true
     }
 
     private fun seekBy(deltaMs: Long) {
@@ -477,6 +529,8 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         slideJob?.cancel()
         reconnectJob?.cancel()
         reconnectAttempts = 0
+        earlyEndRetries = 0
+        TvLog.log("queue", "Start #${cursor.index} \"${item.title}\" at $startPositionMs ms")
         _ui.update {
             it.copy(
                 item = item,
@@ -580,6 +634,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     private companion object {
         const val SEEK_STEP_MS = 10_000L
+        const val EARLY_END_RETRIES = 2
         const val OVERLAY_TIMEOUT_MS = 4_000L
         const val RECONNECTING = "Reconnecting to your phone…"
         /** After ExoPlayer's own retries give up, try again this many times (~1 min more). */

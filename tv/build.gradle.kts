@@ -60,6 +60,8 @@ android {
     testOptions {
         // android.* stubs (e.g. Uri) return defaults instead of throwing in JVM unit tests.
         unitTests.isReturnDefaultValues = true
+        // Robolectric (PlaybackEngineSeekTest) needs the merged manifest and resources.
+        unitTests.isIncludeAndroidResources = true
     }
 
     packaging {
@@ -101,6 +103,19 @@ dependencies {
     implementation(libs.coil.network)
 
     testImplementation(libs.junit)
+    // Runs the real ExoPlayer-based PlaybackEngine on the JVM (seek tests).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
+    testImplementation(libs.media3.test.utils)
+    testImplementation(libs.media3.test.utils.robolectric)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
+}
+
+tasks.withType<Test>().configureEach {
+    // Robolectric downloads its Android framework jar once; use Google's Maven Central mirror
+    // (Maven Central itself rate-limits busy CI hosts) and only the SDK level we test on.
+    systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2")
+    systemProperty("robolectric.enabledSdks", "34")
 }

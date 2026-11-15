@@ -353,6 +353,7 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 | `ProtocolV2Test`, `H264Test`, `QueuePlanTest` | New commands/fields and old-app compatibility, mirror stream framing, SPS/PPS splitting, slideshow-music planning |
 | `ProtocolTest`, `ReceiverCastControllerTest` | JSON format; phone client ↔ real TV API server end to end, errors, lost connection |
 | `QueueCursorTest`, `MediaLibraryTest`, `FileNamesTest` | Queue navigation, reordering, ids, host validation |
+| `PlaybackEngineSeekTest`, `EndCheckTest` | The real TV player (ExoPlayer under Robolectric) streaming a 2:30 video over HTTP: phone seek to 1:20, remote ±10 s, a seek that must fetch a later part of the file, seeking through the other-router tunnel, a file without a seek index (keeps playing instead of restarting); early-end detection |
 | `PhoneScreensTest`, `TvScreensTest` | Render every screen (Paparazzi) |
 
 ## Troubleshooting
@@ -361,6 +362,12 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
   ("AP / client isolation" blocks devices from seeing each other). On LG, enable *LG Connect Apps*.
   TV behind another router? Use *Choose a TV → TVs on another router? → Search*
   ([how it works](#tvs-on-other-routers)).
+- **Skipping restarts the video** — fixed in 1.1.9 for the cases we know: if the stream from
+  the phone ends early, the TV now continues from where it stopped instead of finishing (with
+  repeat on, that used to restart at 0:00); and a file with no seek index (some recorders and
+  downloaders write those) keeps playing and says *"This video can't be skipped through"*.
+  If it still happens, *Network & server → Send diagnostics* right after: both apps now log
+  every seek.
 - **TV app didn't update** — open CastLite on the TV and press **OK**: it checks right away.
   If it says *press OK to allow installing*, allow "Install unknown apps" for CastLite once.
 - **LG says "file not supported"** — the phone shows *"didn't start … can't play this format"*.

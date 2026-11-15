@@ -71,6 +71,9 @@ data class CastSession(
     /** The message to show, if anything is wrong. */
     val problem: String? get() = networkProblem ?: status.error.takeIf { status.state == PlayerState.ERROR }
 
+    /** Something the TV says while still playing (e.g. "can't be skipped through"). */
+    val notice: String? get() = status.error.takeIf { problem == null && status.state != PlayerState.ERROR }
+
     /** "LG TV" or "LG TV + 2 more". */
     val devicesLabel: String get() = if (extraDevices.isEmpty()) device.name else "${device.name} + ${extraDevices.size} more"
 }
@@ -409,7 +412,10 @@ object CastManager {
         if (state == PlayerState.PLAYING || state == PlayerState.LOADING) command(allTvs = true) { pause() }
     }
 
-    fun seekTo(ms: Long) = command(allTvs = true) { seekTo(ms) }
+    fun seekTo(ms: Long) {
+        Diag.log("cast", "Seek to ${ms} ms (TV reported ${_session.value?.status?.positionMs} / ${_session.value?.status?.durationMs} ms)")
+        command(allTvs = true) { seekTo(ms) }
+    }
     fun next() = command(allTvs = true) { next() }
     fun previous() = command(allTvs = true) { previous() }
     fun jumpTo(index: Int) = command(allTvs = true) { jumpTo(index) }

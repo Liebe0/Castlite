@@ -179,6 +179,10 @@ fun NowPlayingScreen(session: CastSession, slideDurationMs: Long, actions: Playe
                 Spacer(Modifier.height(16.dp))
                 ErrorCard(problem, actionLabel = if (session.networkProblem == null) "Retry" else null, onAction = actions.retry)
             }
+            session.notice?.let { notice ->
+                Spacer(Modifier.height(12.dp))
+                Text(notice, style = MaterialTheme.typography.bodySmall, color = Palette.Warning, modifier = Modifier.fillMaxWidth())
+            }
 
             Spacer(Modifier.height(20.dp))
 
