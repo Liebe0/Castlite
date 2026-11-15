@@ -26,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -52,6 +53,7 @@ data class ServerActions(
     val stop: () -> Unit = {},
     val copy: (String) -> Unit = {},
     val open: (String) -> Unit = {},
+    val allowBackground: () -> Unit = {},
 )
 
 /** Diagnostics: the phone's media server, its address, and what TVs have requested. */
@@ -95,6 +97,22 @@ fun ServerScreen(state: MainUiState, actions: ServerActions) {
                             ServerState.Stopped -> "Stopped"
                         },
                     )
+                    Spacer(Modifier.height(12.dp))
+                    val p = state.power
+                    StatusRow(
+                        ok = p.unrestrictedBattery && !p.backgroundRestricted,
+                        title = "Casting with the screen off",
+                        detail = when {
+                            p.backgroundRestricted -> "Blocked: background use is restricted for CastLite"
+                            !p.unrestrictedBattery -> "Battery optimization may pause CastLite on long videos"
+                            else -> "Allowed — CastLite keeps running when the phone locks"
+                        },
+                    )
+                    if (p.backgroundRestricted || !p.unrestrictedBattery) {
+                        TextButton(onClick = actions.allowBackground, modifier = Modifier.padding(start = 14.dp)) {
+                            Text(if (p.backgroundRestricted) "Open settings" else "Allow background use", color = Palette.Cyan)
+                        }
+                    }
                     state.baseUrl?.let { url ->
                         Spacer(Modifier.height(16.dp))
                         Row(

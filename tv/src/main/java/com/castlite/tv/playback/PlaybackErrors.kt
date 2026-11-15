@@ -9,6 +9,14 @@ import androidx.media3.exoplayer.ExoPlaybackException
 @OptIn(UnstableApi::class) // rendererFormat tells us which codec failed
 object PlaybackErrors {
 
+    /** Errors that mean "couldn't reach the phone right now" — worth retrying. */
+    fun isNetwork(e: PlaybackException): Boolean = e.errorCode in setOf(
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+        PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+        PlaybackException.ERROR_CODE_TIMEOUT,
+    )
+
     fun describe(e: PlaybackException): String {
         val format = (e as? ExoPlaybackException)
             ?.takeIf { it.type == ExoPlaybackException.TYPE_RENDERER }

@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -446,7 +447,8 @@ fun PhotoScreen(ui: TvUiState, onShown: (String) -> Unit, onFailed: (String, Str
     val url = ui.item?.url ?: return
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Crossfade(targetState = url, animationSpec = tween(700), label = "photo") { current ->
-            Box(Modifier.fillMaxSize()) {
+            // A new attempt number re-requests the photo after a network hiccup.
+            key(ui.imageAttempt) { Box(Modifier.fillMaxSize()) {
                 // Dimmed, cropped copy fills the letterbox bars with the photo's own colours.
                 AsyncImage(
                     model = current,
@@ -462,7 +464,10 @@ fun PhotoScreen(ui: TvUiState, onShown: (String) -> Unit, onFailed: (String, Str
                     onSuccess = { onShown(current) },
                     onError = { onFailed(current, it.result.throwable.message) },
                 )
-            }
+            } }
+        }
+        ui.warning?.let {
+            Box(Modifier.align(Alignment.TopCenter).padding(top = SafeV)) { Warning(it) }
         }
         if (ui.state == ReceiverState.LOADING) Box(Modifier.align(Alignment.Center)) { Spinner() }
 

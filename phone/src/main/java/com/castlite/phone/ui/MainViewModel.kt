@@ -7,6 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.castlite.phone.cast.CastDevice
 import com.castlite.phone.cast.CastManager
 import com.castlite.phone.cast.CastSession
+import com.castlite.phone.data.AppPrefs
+import com.castlite.phone.data.PowerChecks
+import com.castlite.phone.data.PowerStatus
 import com.castlite.phone.media.CastMedia
 import com.castlite.phone.media.MediaLibrary
 import com.castlite.phone.media.MediaResolver
@@ -18,6 +21,7 @@ import com.castlite.phone.server.ServerMonitor
 import com.castlite.phone.server.ServerState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +41,13 @@ data class MainUiState(
     val selectedDevice: CastDevice? = null,
     val session: CastSession? = null,
     val slideDurationMs: Long = 5_000,
+    val power: PowerStatus = PowerStatus(),
+    val batteryPromptDismissed: Boolean = false,
 ) {
+    /** Show the "keep casting when the phone locks" card? */
+    val showBackgroundPrompt: Boolean
+        get() = power.backgroundRestricted || (!power.unrestrictedBattery && !batteryPromptDismissed)
+
     val baseUrl: String?
         get() {
             val port = (server as? ServerState.Running)?.port ?: return null
@@ -51,6 +61,9 @@ data class MainUiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val resolver = MediaResolver(app)
+    private val prefs = AppPrefs(app)
+    private val power = MutableStateFlow(PowerChecks.read(app))
+    private val batteryPromptDismissed = MutableStateFlow(prefs.batteryPromptDismissed)
     private val localMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     /** Snackbar messages from this screen and from the casting session. */
@@ -62,9 +75,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         MediaLibrary.items,
         CastManager.selectedDevice,
         CastManager.session,
-        CastManager.slideDurationMs,
-    ) { (lan, server, requests), media, device, session, slide ->
-        MainUiState(lan, server, media, requests, device, session, slide)
+        combine(CastManager.slideDurationMs, power, batteryPromptDismissed, ::Triple),
+    ) { (lan, server, requests), media, device, session, (slide, pwr, dismissed) ->
+        MainUiState(lan, server, media, requests, device, session, slide, pwr, dismissed)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
 
     /** Called with the URIs returned by the system picker. */
@@ -100,6 +113,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopServer() {
         CastManager.stop()
         MediaServerService.stop(getApplication())
+    }
+
+    /** Re-read battery settings (call on resume: the user may have just changed them). */
+    fun refreshPower() {
+        power.value = PowerChecks.read(getApplication())
+    }
+
+    fun dismissBackgroundPrompt() {
+        prefs.batteryPromptDismissed = true
+        batteryPromptDismissed.value = true
     }
 
     fun showMessage(text: String) {

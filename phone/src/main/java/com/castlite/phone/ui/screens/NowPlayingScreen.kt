@@ -168,9 +168,9 @@ fun NowPlayingScreen(session: CastSession, slideDurationMs: Long, actions: Playe
                 )
             }
 
-            if (status.state == PlayerState.ERROR) {
+            session.problem?.let { problem ->
                 Spacer(Modifier.height(16.dp))
-                ErrorCard(status.error ?: "Something went wrong", actionLabel = "Retry", onAction = actions.retry)
+                ErrorCard(problem, actionLabel = if (session.networkProblem == null) "Retry" else null, onAction = actions.retry)
             }
 
             Spacer(Modifier.height(20.dp))

@@ -63,6 +63,7 @@ class DlnaController(
     private var pendingSeekMs = 0L       // seek to apply once playback starts
     private var failures = 0
     private var polls = 0
+    private var lastPlayingPositionMs = 0L // last position seen while PLAYING (0 = TV never reported one)
 
     private var pollJob: Job? = null
     private var slideJob: Job? = null
@@ -153,6 +154,7 @@ class DlnaController(
         sawPlaying = false
         stopRequested = false
         pausedByUser = false
+        lastPlayingPositionMs = 0
         pendingSeekMs = startPositionMs
         loadedAt = System.currentTimeMillis()
         slideJob?.cancel()
@@ -251,6 +253,7 @@ class DlnaController(
         when (state) {
             "PLAYING" -> {
                 sawPlaying = true
+                if (!isImage) _status.value.positionMs.takeIf { it > 0 }?.let { lastPlayingPositionMs = it }
                 if (pendingSeekMs > 0) {
                     val target = pendingSeekMs
                     pendingSeekMs = 0
@@ -262,6 +265,15 @@ class DlnaController(
             "TRANSITIONING" -> if (!sawPlaying) _status.update { it.copy(state = PlayerState.LOADING) }
             "STOPPED", "NO_MEDIA_PRESENT" -> when {
                 isImage || stopRequested -> Unit
+                sawPlaying && wasInterrupted(entry) -> _status.update {
+                    // Stopped well before the end: the TV lost the stream (e.g. Wi-Fi) or was
+                    // stopped with its remote. Don't skip ahead; let the user (or auto-resume) retry.
+                    it.copy(
+                        state = PlayerState.ERROR,
+                        positionMs = lastPlayingPositionMs,
+                        error = "Playback stopped on ${device.name} at ${UpnpTime.format(lastPlayingPositionMs)}. Tap Retry to continue.",
+                    )
+                }
                 sawPlaying -> advanceOrEnd() // the item finished on its own
                 System.currentTimeMillis() - loadedAt > startTimeoutMs -> _status.update {
                     it.copy(
@@ -272,6 +284,15 @@ class DlnaController(
                 }
             }
         }
+    }
+
+    /**
+     * True if the TV stopped well before the end of the item. Only decidable when the TV
+     * reports positions; renderers that don't are assumed to have finished.
+     */
+    private fun wasInterrupted(entry: QueueEntry): Boolean {
+        val duration = _status.value.durationMs.takeIf { it > 0 } ?: entry.media.durationMs
+        return lastPlayingPositionMs > 0 && duration > 0 && lastPlayingPositionMs < duration - END_TOLERANCE_MS
     }
 
     private suspend fun refreshVolume() {
@@ -321,6 +342,8 @@ class DlnaController(
     private suspend fun <T> onSerial(block: suspend () -> T): T = withContext(serial) { block() }
 
     companion object {
+        /** Stopping within this much of the end counts as "finished". */
+        private const val END_TOLERANCE_MS = 15_000L
         const val AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
         const val RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1"
     }

@@ -93,10 +93,18 @@ class DlnaControllerTest {
         assertEquals(PlayerState.IDLE, controller.status.value.state)
     }
 
+    /** Plays until the fake TV reports a position near the end of a 5-minute video, then stops. */
+    private fun finishCurrentItem() {
+        tv.relTime = "0:04:55"
+        runBlocking { withTimeout(3_000) { controller.status.first { it.positionMs == 295_000L } } }
+        Thread.sleep(150) // one more poll so the controller records the position while PLAYING
+        tv.transportState = "STOPPED"
+    }
+
     @Test fun advancesToNextItemWhenOneFinishes() {
         runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
         awaitState(PlayerState.PLAYING)
-        tv.transportState = "STOPPED" // the TV reached the end of video 1
+        finishCurrentItem() // the TV reached the end of video 1
         runBlocking { withTimeout(3_000) { controller.status.first { it.index == 1 && it.state == PlayerState.PLAYING } } }
         val uris = tv.calls.filter { it.action == "SetAVTransportURI" }.map { it.body }
         assertEquals(2, uris.size)
@@ -107,8 +115,29 @@ class DlnaControllerTest {
     @Test fun endsAfterLastItem() {
         runBlocking { controller.load(entries(video1), 0, 0, 5_000) }
         awaitState(PlayerState.PLAYING)
-        tv.transportState = "STOPPED"
+        finishCurrentItem()
         awaitState(PlayerState.ENDED)
+    }
+
+    @Test fun stopMidVideoIsAnInterruptionNotTheEnd() {
+        runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
+        awaitState(PlayerState.PLAYING)
+        tv.relTime = "0:01:40"
+        runBlocking { withTimeout(3_000) { controller.status.first { it.positionMs == 100_000L } } }
+        Thread.sleep(150)
+        tv.transportState = "STOPPED" // e.g. the TV lost the stream when Wi-Fi dropped
+        val s = runBlocking { withTimeout(3_000) { controller.status.first { it.state == PlayerState.ERROR } } }
+        assertEquals(0, s.index) // did not skip to video 2
+        assertEquals(100_000, s.positionMs) // retry resumes from here
+        assertTrue(s.error!!, s.error!!.contains("stopped on LG TV at 00:01:40"))
+    }
+
+    @Test fun renderersWithoutPositionsStillAdvance() {
+        runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
+        awaitState(PlayerState.PLAYING)
+        Thread.sleep(150) // RelTime stays 0:00:00 ("not implemented")
+        tv.transportState = "STOPPED"
+        runBlocking { withTimeout(3_000) { controller.status.first { it.index == 1 } } }
     }
 
     @Test fun userStopDoesNotAdvance() = runBlocking {

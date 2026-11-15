@@ -72,6 +72,22 @@ class PhoneScreensTest {
         )
     }
 
+    @Test fun home_background_prompt() = shot {
+        HomeScreen(
+            MainUiState(lan = lan, server = ServerState.Running(8765), media = media.take(3), selectedDevice = lg,
+                power = com.castlite.phone.data.PowerStatus(unrestrictedBattery = false)),
+            HomeActions(),
+        )
+    }
+
+    @Test fun player_wifi_lost() = shot {
+        NowPlayingScreen(
+            CastSession(lg, media, PlaybackStatus(PlayerState.PLAYING, index = 0, positionMs = 312_000, durationMs = 754_000, volume = 35),
+                networkProblem = "Wi-Fi disconnected. Casting resumes automatically when it's back."),
+            5_000, PlayerActions(),
+        )
+    }
+
     @Test fun home_offline() = shot {
         HomeScreen(MainUiState(lan = LanStatus.Disconnected, media = media.take(2)), HomeActions())
     }

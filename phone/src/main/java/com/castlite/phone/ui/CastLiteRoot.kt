@@ -36,7 +36,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.castlite.phone.data.PowerChecks
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.castlite.phone.ui.screens.DevicesActions
 import com.castlite.phone.ui.screens.DevicesScreen
@@ -79,6 +81,19 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
 
     BackHandler(enabled = screen != Screen.HOME) { screen = Screen.HOME }
 
+    // Battery settings may have changed while the user was in system settings.
+    LifecycleResumeEffect(Unit) {
+        vm.refreshPower()
+        onPauseOrDispose { }
+    }
+    val allowBackground = {
+        val power = state.power
+        val intent = if (power.backgroundRestricted) PowerChecks.appSettings(context) else PowerChecks.exemptionRequest(context)
+        if (!context.tryStart(intent) && !context.tryStart(PowerChecks.batterySettings())) {
+            context.tryStart(PowerChecks.appSettings(context))
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = screen,
@@ -106,6 +121,8 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                         clear = vm::clearQueue,
                         setSlideDuration = vm::setSlideDuration,
                         togglePlayPause = vm::togglePlayPause,
+                        allowBackground = allowBackground,
+                        dismissBackgroundPrompt = vm::dismissBackgroundPrompt,
                     ),
                 )
 
@@ -154,6 +171,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                         stop = vm::stopServer,
                         copy = { url -> context.copyToClipboard(url); vm.showMessage("URL copied") },
                         open = { url -> if (!context.openUrl(url)) vm.showMessage("No browser installed") },
+                        allowBackground = allowBackground,
                     ),
                 )
             }
@@ -170,6 +188,13 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
 
 private fun Context.copyToClipboard(text: String) {
     getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("CastLite URL", text))
+}
+
+private fun Context.tryStart(intent: Intent): Boolean = try {
+    startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    true
+} catch (e: Exception) {
+    false
 }
 
 private fun Context.openUrl(url: String): Boolean = try {

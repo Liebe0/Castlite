@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreVert
@@ -95,6 +96,8 @@ data class HomeActions(
     val clear: () -> Unit = {},
     val setSlideDuration: (Long) -> Unit = {},
     val togglePlayPause: () -> Unit = {},
+    val allowBackground: () -> Unit = {},
+    val dismissBackgroundPrompt: () -> Unit = {},
 )
 
 private val SLIDE_OPTIONS = listOf(3_000L, 5_000L, 8_000L, 15_000L)
@@ -126,6 +129,10 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
             (state.server as? ServerState.Failed)?.let { item { ErrorCard(it.message) } }
 
             item { DeviceCard(state.selectedDevice, actions.chooseDevice) }
+
+            if (state.showBackgroundPrompt) {
+                item { BackgroundPrompt(state.power.backgroundRestricted, actions.allowBackground, actions.dismissBackgroundPrompt) }
+            }
 
             item {
                 SectionHeader(if (state.media.isEmpty()) "Queue" else "Queue · ${state.media.size}") {
@@ -281,6 +288,56 @@ private fun DeviceCard(device: CastDevice?, onClick: () -> Unit) {
     }
 }
 
+/** Asks to exempt CastLite from battery optimization so casting survives a locked phone. */
+@Composable
+private fun BackgroundPrompt(restricted: Boolean, onAllow: () -> Unit, onDismiss: () -> Unit) {
+    AppCard(
+        Modifier.fillMaxWidth(),
+        color = Palette.Surface,
+        border = BorderStroke(1.dp, (if (restricted) Palette.Error else Palette.Warning).copy(alpha = 0.4f)),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            IconDisc(Icons.Filled.Bedtime, if (restricted) Palette.Error else Palette.Warning, size = 44.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (restricted) "Background use is blocked" else "Keep casting when your phone locks",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Palette.TextPrimary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (restricted) {
+                        "Android will stop CastLite soon after the screen turns off. Open settings → Battery → allow background use."
+                    } else {
+                        "Allow CastLite to run in the background so long videos don't stop after the screen turns off."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextSecondary,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50)).background(Palette.AccentHorizontal)
+                            .clickable(onClick = onAllow).padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        Text(if (restricted) "Open settings" else "Allow", style = MaterialTheme.typography.labelLarge, color = Color(0xFF0A0D14))
+                    }
+                    if (!restricted) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Not now",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Palette.TextSecondary,
+                            modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onDismiss).padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SlideshowChip(current: Long, onChange: (Long) -> Unit) {
     var open by remember { mutableStateOf(false) }
@@ -405,10 +462,10 @@ private fun MiniPlayer(state: MainUiState, onOpen: () -> Unit, onToggle: () -> U
                 Column(Modifier.weight(1f)) {
                     Text(media?.displayName ?: "…", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), color = Palette.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(stateColor(status.state), size = 6.dp)
+                        StatusDot(if (session.networkProblem != null) Palette.Error else stateColor(status.state), size = 6.dp)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "${stateLabel(status.state)} on ${session.device.name}",
+                            if (session.networkProblem != null) "Waiting for Wi-Fi…" else "${stateLabel(status.state)} on ${session.device.name}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Palette.TextSecondary,
                             maxLines = 1,

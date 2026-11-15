@@ -72,6 +72,13 @@ class TvScreensTest {
         ) { FakeFrame() }
     }
 
+    @Test fun video_reconnecting() = shot {
+        VideoScreen(
+            TvUiState(item = video, index = 0, count = 5, state = ReceiverState.LOADING, isBuffering = true, positionMs = 312_000, durationMs = 754_000,
+                overlayVisible = true, warning = "Reconnecting to your phone…", phone = "192.168.1.23"),
+        ) { FakeFrame() }
+    }
+
     @Test fun audio() = shot {
         AudioScreen(TvUiState(item = song, index = 3, count = 5, state = ReceiverState.PLAYING, positionMs = 81_000, durationMs = 214_000))
     }

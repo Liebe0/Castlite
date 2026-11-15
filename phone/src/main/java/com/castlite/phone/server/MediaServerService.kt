@@ -7,19 +7,19 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.media.app.NotificationCompat.MediaStyle
 import com.castlite.phone.CastLiteApp
 import com.castlite.phone.MainActivity
 import com.castlite.phone.R
 import com.castlite.phone.cast.CastManager
+import com.castlite.phone.cast.CastMediaSession
 import com.castlite.phone.cast.CastSession
 import com.castlite.phone.cast.PlayerState
 import com.castlite.phone.media.MediaLibrary
@@ -30,27 +30,52 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 
 /**
- * Foreground service that owns the [MediaHttpServer]. Running as a foreground service
- * (with a visible notification) keeps Android from killing the server while the
- * screen is off or another app is in front, which would stop playback on the TV.
+ * Foreground service that keeps casting alive while the phone is locked or another app
+ * is in front. It owns:
+ *  - the [MediaHttpServer] the TV streams from,
+ *  - [KeepAwake]: wake + Wi-Fi locks while a TV depends on us (released when idle),
+ *  - [CastMediaSession]: lock-screen controls and volume keys → TV volume,
+ *  - the notification (media-style while casting, with Previous, Play/Pause, Next, Stop).
  *
- * It also holds a Wi-Fi lock so the radio doesn't drop into power save mid-stream.
+ * Being a foreground service is what lets all of this keep running in Doze: Android
+ * keeps network access and honours wake locks for apps with a foreground service.
  */
 class MediaServerService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var server: MediaHttpServer? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-    private var wakeLock: PowerManager.WakeLock? = null
+    private lateinit var keepAwake: KeepAwake
+    private lateinit var mediaSession: CastMediaSession
+    private var notification: Notification? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        keepAwake = KeepAwake(this)
+        mediaSession = CastMediaSession(this)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Must be called within a few seconds of startForegroundService(). Re-use the
+        // current notification so control taps don't flash a "Starting…" placeholder.
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            notification ?: buildNotification(LanStatus.Disconnected, 0, null, null),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0,
+        )
+
         when (intent?.action) {
             ACTION_STOP -> {
                 CastManager.stop()
@@ -59,15 +84,8 @@ class MediaServerService : Service() {
             }
             ACTION_TOGGLE -> CastManager.togglePlayPause()
             ACTION_NEXT -> CastManager.next()
+            ACTION_PREVIOUS -> CastManager.previous()
         }
-
-        // Must be called within a few seconds of startForegroundService().
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(LanStatus.Disconnected, 0, null, null),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0,
-        )
 
         if (server == null) {
             val started = startServer()
@@ -76,8 +94,7 @@ class MediaServerService : Service() {
                 return START_NOT_STICKY
             }
             server = started
-            acquireLocks()
-            observeForNotification(started.listeningPort)
+            observe(started.listeningPort)
         }
         // Not sticky: after a crash the picked-file permissions are gone anyway, so the
         // user should reopen the app rather than have a server with nothing to serve.
@@ -101,25 +118,48 @@ class MediaServerService : Service() {
         }
         Log.e(TAG, "Could not start server", lastError)
         ServerMonitor.setState(
-            ServerState.Failed("Couldn't open a network port (${lastError?.message}). Try again or restart the phone.")
+            ServerState.Failed("Couldn't open a network port (${lastError?.message}). Try again or restart the phone."),
         )
         return null
     }
 
-    /** Keeps the notification text in sync with the address and number of files. */
-    private fun observeForNotification(port: Int) {
-        val lan = LanMonitor(this)
+    private fun observe(port: Int) {
+        // Notification + media session follow the cast session and the network.
         scope.launch {
-            combine(lan.status, MediaLibrary.items, CastManager.session) { status, items, session ->
-                buildNotification(status, items.size, port, session)
-            }.collect { notify(it) }
+            combine(LanMonitor(this@MediaServerService).status, MediaLibrary.items, CastManager.session) { lan, items, session ->
+                Triple(lan, items.size, session)
+            }.collect { (lan, count, session) ->
+                mediaSession.update(session)
+                notify(buildNotification(lan, count, port, session))
+            }
+        }
+
+        // A fresh server counts as activity: the user just picked media or started casting.
+        keepAwake.onActivity()
+        // Stay awake while a TV depends on us: a session starting or actively playing...
+        scope.launch {
+            CastManager.session
+                .map { s -> s != null && s.status.state in AWAKE_STATES }
+                .collect { busy -> if (busy) keepAwake.onActivity() }
+        }
+        // ...or the TV (or a browser) fetching media.
+        scope.launch {
+            ServerMonitor.requests.drop(1).collect { keepAwake.onActivity() }
+        }
+        // Renew while busy, release when idle (e.g. paused for 30 minutes).
+        scope.launch {
+            while (isActive) {
+                delay(KeepAwake.CHECK_EVERY_MS)
+                keepAwake.check()
+            }
         }
     }
 
     @SuppressLint("MissingPermission") // Checked by NotificationManagerCompat; no-op if denied.
-    private fun notify(notification: Notification) {
+    private fun notify(n: Notification) {
+        notification = n
         if (NotificationManagerCompat.from(this).areNotificationsEnabled()) {
-            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
+            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, n)
         }
     }
 
@@ -129,12 +169,7 @@ class MediaServerService : Service() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val stop = PendingIntent.getService(
-            this, 1,
-            Intent(this, MediaServerService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val title = session?.current?.displayName?.let { "Casting · $it" } ?: "CastLite media server"
+        val title = session?.current?.displayName ?: "CastLite media server"
         val text = when {
             port == null -> "Starting…"
             !lan.isConnected -> "Wi-Fi disconnected — the TV can't reach this phone"
@@ -151,13 +186,31 @@ class MediaServerService : Service() {
             .setSilent(true)
             .setColor(0xFF4FC3F7.toInt())
             .setContentIntent(openApp)
+            // Show title and controls on the lock screen.
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+
         if (session != null) {
-            val playing = session.status.state == PlayerState.PLAYING
-            builder.addAction(0, if (playing) "Pause" else "Play", serviceIntent(ACTION_TOGGLE, 2))
-            if (session.status.index + 1 < session.queue.size) builder.addAction(0, "Next", serviceIntent(ACTION_NEXT, 3))
+            val playing = session.status.state == PlayerState.PLAYING || session.status.state == PlayerState.LOADING
+            builder.addAction(R.drawable.ic_skip_previous, "Previous", serviceIntent(ACTION_PREVIOUS, 4))
+            builder.addAction(
+                if (playing) R.drawable.ic_pause else R.drawable.ic_play,
+                if (playing) "Pause" else "Play",
+                serviceIntent(ACTION_TOGGLE, 2),
+            )
+            builder.addAction(R.drawable.ic_skip_next, "Next", serviceIntent(ACTION_NEXT, 3))
+            builder.addAction(R.drawable.ic_stop, "Stop", serviceIntent(ACTION_STOP, 1))
+            // Media style = proper lock-screen player (Android 13+ draws it from the media session).
+            builder.setStyle(
+                MediaStyle()
+                    .setMediaSession(mediaSession.token)
+                    .setShowActionsInCompactView(0, 1, 2),
+            )
+        } else {
+            builder.addAction(R.drawable.ic_stop, "Stop", serviceIntent(ACTION_STOP, 1))
         }
-        return builder.addAction(0, "Stop", stop).build()
+        return builder.build()
     }
 
     private fun serviceIntent(action: String, requestCode: Int): PendingIntent = PendingIntent.getService(
@@ -166,27 +219,12 @@ class MediaServerService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
-    @Suppress("DEPRECATION") // WIFI_MODE_FULL_HIGH_PERF is deprecated on 34+ but still the right choice below it.
-    private fun acquireLocks() {
-        val wifi = applicationContext.getSystemService(WifiManager::class.java)
-        wifiLock = wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "CastLite:server")?.apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-        // Keeps the CPU running so the server keeps sending bytes with the screen off.
-        val power = getSystemService(PowerManager::class.java)
-        wakeLock = power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CastLite:server")?.apply {
-            setReferenceCounted(false)
-            acquire(WAKE_LOCK_TIMEOUT_MS)
-        }
-    }
-
     override fun onDestroy() {
         scope.cancel()
         server?.stop()
         server = null
-        wifiLock?.takeIf { it.isHeld }?.release()
-        wakeLock?.takeIf { it.isHeld }?.release()
+        keepAwake.release()
+        mediaSession.release()
         if (ServerMonitor.state.value is ServerState.Running) ServerMonitor.setState(ServerState.Stopped)
         Log.i(TAG, "Media server stopped")
         super.onDestroy()
@@ -198,9 +236,10 @@ class MediaServerService : Service() {
         private const val ACTION_STOP = "com.castlite.phone.action.STOP_SERVER"
         private const val ACTION_TOGGLE = "com.castlite.phone.action.TOGGLE"
         private const val ACTION_NEXT = "com.castlite.phone.action.NEXT"
+        private const val ACTION_PREVIOUS = "com.castlite.phone.action.PREVIOUS"
 
-        /** Safety net so a forgotten session can't drain the battery forever. */
-        private const val WAKE_LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
+        /** States in which the TV is actively relying on the phone. */
+        private val AWAKE_STATES = setOf(PlayerState.CONNECTING, PlayerState.LOADING, PlayerState.PLAYING)
 
         /** Starts the server (no-op if already running). Call from the foreground UI. */
         fun start(context: Context) {

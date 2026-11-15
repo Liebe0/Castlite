@@ -7,6 +7,7 @@ import com.castlite.phone.data.AppPrefs
 import com.castlite.phone.media.CastMedia
 import com.castlite.phone.media.MediaLibrary
 import com.castlite.phone.net.LanMonitor
+import com.castlite.phone.net.LanStatus
 import com.castlite.phone.server.MediaServerService
 import com.castlite.phone.server.ServerMonitor
 import com.castlite.phone.server.ServerState
@@ -23,16 +24,39 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+/** When to re-send the current item after a network change. Pure logic, unit-tested. */
+object AutoResume {
+    /** True when we went from no network to a network, or our IP address changed. */
+    fun shouldCheck(previous: LanStatus?, current: LanStatus): Boolean =
+        previous != null && current.isConnected && (!previous.isConnected || addressChanged(previous, current))
+
+    fun addressChanged(previous: LanStatus?, current: LanStatus): Boolean =
+        previous?.ipAddress != null && current.ipAddress != null && previous.ipAddress != current.ipAddress
+
+    /**
+     * A new address breaks every media URL the TV has, so always resend. Otherwise only
+     * resend if the TV actually lost the stream (it may have played on from its buffer).
+     */
+    fun shouldResume(addressChanged: Boolean, state: PlayerState): Boolean =
+        addressChanged || state == PlayerState.ERROR
+}
 
 /** The current casting session: which TV, what was sent, and what the TV reports. */
 data class CastSession(
     val device: CastDevice,
     val queue: List<CastMedia>,
     val status: PlaybackStatus,
+    /** Set while the phone has no Wi-Fi (kept apart from [status], which is what the TV reports). */
+    val networkProblem: String? = null,
 ) {
     val current: CastMedia? get() = queue.getOrNull(status.index)
+
+    /** The message to show, if anything is wrong. */
+    val problem: String? get() = networkProblem ?: status.error.takeIf { status.state == PlayerState.ERROR }
 }
 
 /**
@@ -42,6 +66,7 @@ data class CastSession(
  */
 object CastManager {
     private const val TAG = "CastManager"
+    private const val AUTO_RESUME_DELAY_MS = 3_000L
 
     // Application context only (set in CastLiteApp.onCreate), so this can't leak an Activity.
     @SuppressLint("StaticFieldLeak")
@@ -135,6 +160,21 @@ object CastManager {
         }
     }
 
+    /** Explicit play/pause for the lock screen, headset buttons and notification. */
+    fun play() {
+        when (_session.value?.status?.state ?: return) {
+            PlayerState.PAUSED -> command { play() }
+            PlayerState.ENDED, PlayerState.IDLE -> cast(0)
+            PlayerState.ERROR -> retry()
+            else -> Unit
+        }
+    }
+
+    fun pause() {
+        val state = _session.value?.status?.state ?: return
+        if (state == PlayerState.PLAYING || state == PlayerState.LOADING) command { pause() }
+    }
+
     fun seekTo(ms: Long) = command { seekTo(ms) }
     fun next() = command { next() }
     fun previous() = command { previous() }
@@ -185,19 +225,33 @@ object CastManager {
         }
     }
 
-    /** Wi-Fi drop → the TV can't fetch media any more; say so instead of failing silently. */
+    /**
+     * Wi-Fi drop → the TV can't fetch media any more; say so instead of failing silently.
+     * When Wi-Fi comes back (often while the phone is locked, so nobody can tap Retry),
+     * resume automatically if the TV lost the stream or our address changed.
+     */
     private fun watchWifi() {
         scope.launch {
-            var wasConnected = true
+            var previous: LanStatus? = null
             LanMonitor(app).status.collect { lan ->
                 val s = _session.value
-                if (!lan.isConnected && s != null && s.status.state != PlayerState.ERROR) {
-                    _session.value = s.copy(
-                        status = s.status.copy(state = PlayerState.ERROR, error = "Wi-Fi disconnected. Playback will stop when the TV runs out of buffered data."),
-                    )
+                _session.update {
+                    it?.copy(networkProblem = if (lan.isConnected) null else "Wi-Fi disconnected. Casting resumes automatically when it's back.")
                 }
-                if (lan.isConnected && !wasConnected && s != null) emit("Wi-Fi is back. Tap Retry to resume.")
-                wasConnected = lan.isConnected
+                if (AutoResume.shouldCheck(previous, lan) && s != null) {
+                    val addressChanged = AutoResume.addressChanged(previous, lan)
+                    scope.launch {
+                        // Give the TV a moment: if it simply kept playing, polling shows that.
+                        delay(AUTO_RESUME_DELAY_MS)
+                        val now = _session.value ?: return@launch
+                        if (now.device.id == s.device.id && AutoResume.shouldResume(addressChanged, now.status.state)) {
+                            Log.i(TAG, "Wi-Fi back (address changed: $addressChanged) — resuming")
+                            emit("Wi-Fi is back — resuming on ${now.device.name}")
+                            retry()
+                        }
+                    }
+                }
+                previous = lan
             }
         }
     }

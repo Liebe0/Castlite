@@ -34,7 +34,7 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 | **Protocol shown** | Every screen shows whether DLNA or the CastLite app is in use. |
 | **TV app** | ExoPlayer video & audio, photo slideshow with crossfade, full remote/D-pad support, "waiting for phone" screen with the TV's IP. |
 | **Errors** | Clear messages for unsupported codecs, files the TV refuses, Wi-Fi drops, lost TVs — with *Retry*. |
-| **Background** | Foreground service with notification controls (Play/Pause, Next, Stop), Wi-Fi + wake locks. |
+| **Phone locked** | Keeps casting with the screen off: foreground service, renewed wake lock, lock-screen media controls, volume keys → TV volume, automatic resume after Wi-Fi drops. See [below](#when-the-phone-is-locked). |
 
 ## Architecture
 
@@ -180,6 +180,34 @@ The status chip in the phone's top-right corner (*Ready* / *Idle* / *Offline*) o
 address, the server URL (open it in any browser to test without a TV), every file URL,
 and a log of what the TV requested (handy for debugging a picky TV).
 
+## When the phone is locked
+
+Turning the phone's screen off (or locking it) doesn't stop casting:
+
+- **Stays alive.** The media server runs in a *foreground service* (`mediaPlayback`).
+  Android keeps network access and honours wake locks for foreground services even in
+  Doze, so the TV keeps streaming and the DLNA queue/slideshow timers keep firing.
+- **Stays awake only when needed.** A partial wake lock (+ Wi-Fi lock) is held while
+  something plays or the TV is fetching data, renewed every few minutes, and released
+  after 30 minutes without activity (e.g. a forgotten paused video) to save battery.
+- **Control without unlocking.** A media session gives a lock-screen player
+  (play/pause, previous/next, seek bar), headset buttons work, and the **phone's volume
+  keys change the TV's volume**.
+- **Recovers by itself.** If Wi-Fi drops or the phone gets a new IP address while it's in
+  your pocket, CastLite resends the current item at the same position when Wi-Fi is
+  back — no need to unlock and tap Retry. On DLNA, a TV that stops mid-video is treated
+  as an interruption (not "finished"), so the queue doesn't skip ahead.
+- **The TV rides out hiccups.** The CastLite TV app buffers up to 2 minutes ahead,
+  retries the phone patiently, and shows "Reconnecting to your phone…" for up to about two
+  minutes before giving up (photos are re-requested too).
+- **Battery optimization.** On first use the app shows *"Keep casting when your phone
+  locks"* → **Allow**. Some brands (Xiaomi/Redmi, Huawei, OnePlus, Samsung) add their own
+  battery savers on top: set CastLite to *No restrictions / Unrestricted* and, on Xiaomi,
+  enable *Autostart*. The *Network & server* screen shows whether background use is allowed.
+
+Android 14+ no longer lets apps stop Wi-Fi power-save while the screen is off; the
+connection stays up and the TV-side buffer covers the extra latency.
+
 ## Building locally
 
 Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio covers both.
@@ -192,13 +220,14 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 # → tv/build/outputs/apk/debug/tv-debug.apk
 ```
 
-### Tests (98, all on the JVM)
+### Tests (all on the JVM)
 
 | Suite | What it covers |
 |---|---|
 | `RangeRequestTest`, `MediaHttpServerTest` | Range parsing; the real media server over HTTP (200/206/416, HEAD, DLNA headers, unknown sizes, missing files) |
 | `DlnaPrimitivesTest` | SSDP parsing, LG-style device descriptions, SOAP envelopes/faults, DIDL-Lite, time formats, MIME normalization, XXE rejection |
-| `DlnaControllerTest` | `DlnaController` against a fake UPnP renderer: load sequence, polling, seek/volume, auto-advance, slideshow, 701 retry, 714 errors, "TV never started", lost connection |
+| `DlnaControllerTest` | `DlnaController` against a fake UPnP renderer: load sequence, polling, seek/volume, auto-advance, interrupted vs. finished, slideshow, 701 retry, 714 errors, "TV never started", lost connection |
+| `KeepAwakePolicyTest`, `PatientLoadErrorPolicyTest` | Wake-lock idle policy, auto-resume after Wi-Fi changes, TV retry/backoff policy |
 | `ProtocolTest`, `ReceiverCastControllerTest` | JSON format; phone client ↔ real TV API server end to end, errors, lost connection |
 | `QueueCursorTest`, `MediaLibraryTest`, `FileNamesTest` | Queue navigation, reordering, ids, host validation |
 | `PhoneScreensTest`, `TvScreensTest` | Render every screen (Paparazzi) |
@@ -211,7 +240,8 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
   LG plays H.264/H.265 MP4 and MKV well; some codecs (e.g. DTS audio, AV1 on older models) aren't supported.
 - **Android TV shows "This TV can't decode this file (video/hevc …)"** — the TV's hardware
   lacks that codec. Convert to H.264/AAC MP4, or try the DLNA path if the TV has one.
-- **Playback stops with the phone screen off** — some phones (Xiaomi, Huawei, Samsung)
-  kill background apps aggressively: set CastLite's battery usage to *Unrestricted*.
+- **Playback stops with the phone screen off** — tap *Allow* on the "Keep casting when your
+  phone locks" card (or *Network & server → Allow background use*). Xiaomi/Huawei/OnePlus
+  also need *No restrictions* (and *Autostart* on Xiaomi) in their own battery settings.
 - **Wi-Fi dropped** — the phone shows a red banner; when Wi-Fi is back, tap **Retry** to
   resume from where it stopped.

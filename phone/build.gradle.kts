@@ -17,8 +17,8 @@ android {
         applicationId = "com.castlite.phone"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     signingConfigs {
@@ -88,6 +88,8 @@ dependencies {
     // Thumbnails for the queue (photos and video frames).
     implementation(libs.coil.compose)
     implementation(libs.coil.video)
+    // MediaSession: lock-screen controls and volume keys → TV volume while the phone is locked.
+    implementation(libs.androidx.media)
 
     testImplementation(libs.junit)
 }

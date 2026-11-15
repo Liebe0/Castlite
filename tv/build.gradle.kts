@@ -16,8 +16,8 @@ android {
         applicationId = "com.castlite.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     signingConfigs {
@@ -48,6 +48,11 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    testOptions {
+        // android.* stubs (e.g. Uri) return defaults instead of throwing in JVM unit tests.
+        unitTests.isReturnDefaultValues = true
     }
 
     packaging {

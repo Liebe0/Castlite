@@ -12,7 +12,9 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.ExoPlayer
 import com.castlite.protocol.Command
 import com.castlite.protocol.MediaType
@@ -49,6 +51,8 @@ data class TvUiState(
     val phone: String? = null,
     /** Shown on the idle screen after a session, e.g. "Finished playing". */
     val lastMessage: String? = null,
+    /** Bumped to make the photo screen request the current photo again. */
+    val imageAttempt: Int = 0,
 ) {
     val isIdle: Boolean get() = item == null
     val isPlaying: Boolean get() = state == ReceiverState.PLAYING
@@ -70,6 +74,15 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         // Falls back to another decoder (e.g. software) if the TV's primary one fails.
         DefaultRenderersFactory(context).setEnableDecoderFallback(true),
     )
+        // Buffer up to 2 minutes ahead (default ~50 s) so short gaps — the phone locking,
+        // Wi-Fi power-save, roaming — never reach the screen.
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(30_000, 120_000, 2_500, 5_000)
+                .build(),
+        )
+        // Keep retrying the phone for a while instead of failing on the first timeouts.
+        .setMediaSourceFactory(DefaultMediaSourceFactory(context).setLoadErrorHandlingPolicy(PatientLoadErrorPolicy()))
         .setAudioAttributes(
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
             /* handleAudioFocus = */ true,
@@ -81,6 +94,8 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     private var cursor = QueueCursor()
     private var slideJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var reconnectAttempts = 0
     private var overlayJob: Job? = null
     private var tickerJob: Job? = null
 
@@ -89,8 +104,10 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _ui.update { it.copy(isBuffering = playbackState == Player.STATE_BUFFERING) }
                 if (playbackState == Player.STATE_READY) {
+                    reconnectAttempts = 0
                     _ui.update {
-                        if (it.state == ReceiverState.LOADING) it.copy(state = if (player.playWhenReady) ReceiverState.PLAYING else ReceiverState.PAUSED) else it
+                        val cleared = if (it.warning == RECONNECTING) it.copy(warning = null) else it
+                        if (cleared.state == ReceiverState.LOADING) cleared.copy(state = if (player.playWhenReady) ReceiverState.PLAYING else ReceiverState.PAUSED) else cleared
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
                     advanceOrFinish()
@@ -109,7 +126,22 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
             override fun onPlayerError(error: PlaybackException) {
                 slideJob?.cancel()
-                _ui.update { it.copy(state = ReceiverState.ERROR, error = PlaybackErrors.describe(error), isBuffering = false) }
+                // The phone may just be briefly unreachable (screen off, Wi-Fi power-save,
+                // roaming): keep trying for a while before showing an error.
+                if (PlaybackErrors.isNetwork(error) && reconnectAttempts < RECONNECT_DELAYS_MS.size) {
+                    val wait = RECONNECT_DELAYS_MS[reconnectAttempts++]
+                    _ui.update { it.copy(state = ReceiverState.LOADING, warning = RECONNECTING, isBuffering = true) }
+                    showOverlay(autoHide = false)
+                    reconnectJob?.cancel()
+                    reconnectJob = scope.launch {
+                        delay(wait)
+                        // prepare() after an error resumes from the same position.
+                        player.prepare()
+                        player.playWhenReady = true
+                    }
+                    return
+                }
+                _ui.update { it.copy(state = ReceiverState.ERROR, error = PlaybackErrors.describe(error), isBuffering = false, warning = null) }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -198,6 +230,8 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     /** Ends the session and returns to the idle screen. */
     fun stop(message: String? = null) {
         slideJob?.cancel()
+        reconnectJob?.cancel()
+        reconnectAttempts = 0
         tickerJob?.cancel()
         player.stop()
         player.clearMediaItems()
@@ -252,14 +286,28 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     fun onImageShown(url: String) {
         if (cursor.current?.url != url) return
+        reconnectAttempts = 0
+        _ui.update { if (it.warning == RECONNECTING) it.copy(warning = null) else it }
         _ui.update { if (it.state == ReceiverState.LOADING) it.copy(state = ReceiverState.PLAYING) else it }
         if (_ui.value.state == ReceiverState.PLAYING) scheduleSlide()
     }
 
     fun onImageFailed(url: String, reason: String?) {
         if (cursor.current?.url != url) return
+        // Probably a short network hiccup: ask for the same photo again a few times.
+        if (reconnectAttempts < IMAGE_RETRY_DELAYS_MS.size) {
+            val wait = IMAGE_RETRY_DELAYS_MS[reconnectAttempts++]
+            slideJob?.cancel()
+            _ui.update { it.copy(warning = RECONNECTING) }
+            reconnectJob?.cancel()
+            reconnectJob = scope.launch {
+                delay(wait)
+                if (cursor.current?.url == url) _ui.update { it.copy(imageAttempt = it.imageAttempt + 1) }
+            }
+            return
+        }
         _ui.update {
-            it.copy(state = ReceiverState.ERROR, error = "Couldn't show this photo" + (reason?.let { r -> " ($r)" } ?: "") + ".")
+            it.copy(state = ReceiverState.ERROR, warning = null, error = "Couldn't show this photo" + (reason?.let { r -> " ($r)" } ?: "") + ".")
         }
         // Keep a slideshow going past a broken photo.
         scope.launch {
@@ -310,6 +358,8 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     private fun startItem(startPositionMs: Long) {
         val item = cursor.current ?: return
         slideJob?.cancel()
+        reconnectJob?.cancel()
+        reconnectAttempts = 0
         _ui.update {
             it.copy(
                 item = item,
@@ -408,6 +458,10 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     private companion object {
         const val SEEK_STEP_MS = 10_000L
+        const val RECONNECTING = "Reconnecting to your phone…"
+        /** After ExoPlayer's own retries give up, try again this many times (~1 min more). */
+        val RECONNECT_DELAYS_MS = longArrayOf(3_000, 6_000, 10_000, 15_000, 20_000)
+        val IMAGE_RETRY_DELAYS_MS = longArrayOf(1_500, 3_000, 5_000, 8_000)
         const val OVERLAY_TIMEOUT_MS = 4_000L
         val HANDLED_KEYS = setOf(
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,

@@ -27,7 +27,12 @@ class AppPrefs(context: Context) {
         get() = prefs.getLong(KEY_SLIDE, 5_000L)
         set(value) = prefs.edit().putLong(KEY_SLIDE, value).apply()
 
+    var batteryPromptDismissed: Boolean
+        get() = prefs.getBoolean(KEY_BATTERY_DISMISSED, false)
+        set(value) = prefs.edit().putBoolean(KEY_BATTERY_DISMISSED, value).apply()
+
     private companion object {
+        const val KEY_BATTERY_DISMISSED = "battery_prompt_dismissed"
         const val KEY_LAST_DEVICE = "last_device"
         const val KEY_MANUAL = "manual_devices"
         const val KEY_SLIDE = "slide_duration_ms"
