@@ -80,6 +80,14 @@ class PhoneScreensTest {
         )
     }
 
+    @Test fun home_update_ready() = shot {
+        HomeScreen(
+            MainUiState(lan = lan, server = ServerState.Running(8765), media = media.take(3), selectedDevice = shield,
+                update = com.castlite.updater.UpdateState.ReadyToInstall("1.1.12")),
+            HomeActions(),
+        )
+    }
+
     @Test fun player_wifi_lost() = shot {
         NowPlayingScreen(
             CastSession(lg, media, PlaybackStatus(PlayerState.PLAYING, index = 0, positionMs = 312_000, durationMs = 754_000, volume = 35),

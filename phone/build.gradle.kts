@@ -17,8 +17,9 @@ android {
         applicationId = "com.castlite.phone"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = rootProject.extra["castliteVersionCode"] as Int
+        versionName = rootProject.extra["castliteVersionName"] as String
+        buildConfigField("String", "UPDATE_MANIFEST_URL", "\"${rootProject.extra["castliteUpdateManifestUrl"]}\"")
     }
 
     signingConfigs {
@@ -49,6 +50,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     testOptions {
@@ -85,6 +87,8 @@ dependencies {
     implementation(libs.nanohttpd)
     // Phone <-> CastLite TV app protocol (shared with the tv module).
     implementation(project(":protocol"))
+    // Self-update from GitHub releases (shared with the other app).
+    implementation(project(":updater"))
     // Thumbnails for the queue (photos and video frames).
     implementation(libs.coil.compose)
     implementation(libs.coil.video)

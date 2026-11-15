@@ -32,6 +32,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        (application as CastLiteApp).isUiVisible = true
+    }
+
+    override fun onStop() {
+        (application as CastLiteApp).isUiVisible = false
+        super.onStop()
+    }
+
     /**
      * Android 13+ hides the foreground-service notification (and its Stop button)
      * unless we're allowed to post notifications. The server works without it.

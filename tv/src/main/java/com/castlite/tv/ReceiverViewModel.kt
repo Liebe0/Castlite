@@ -1,6 +1,7 @@
 package com.castlite.tv
 
 import android.app.Application
+import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
@@ -19,7 +20,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import com.castlite.updater.UpdateState
 import java.io.IOException
 
 /** Address and health of the receiver, shown on the idle screen. */
@@ -39,6 +44,8 @@ data class ReceiverInfoState(
 class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandler {
 
     val engine = PlaybackEngine(app, viewModelScope)
+    val updater = (app as CastLiteTvApp).updater
+    @Volatile private var visible = false
     private val nsd = NsdAdvertiser(app)
     private var server: ReceiverApiServer? = null
 
@@ -48,7 +55,17 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandl
     private val _info = MutableStateFlow(ReceiverInfoState(deviceName, LocalAddress.ipv4()))
     val info: StateFlow<ReceiverInfoState> = _info.asStateFlow()
 
+    init {
+        // Never interrupt playback with an update: install only on the idle screen.
+        updater.canInstallNow = { visible && engine.ui.value.isIdle }
+        viewModelScope.launch {
+            engine.ui.map { it.isIdle }.distinctUntilChanged().collect { idle -> if (idle) updater.installIfReady() }
+        }
+    }
+
     fun startReceiving() {
+        visible = true
+        updater.onForeground()
         refreshAddress()
         if (server == null) {
             val s = ReceiverApiServer(this, ReceiverProtocol.PORT)
@@ -69,6 +86,7 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandl
     }
 
     fun stopReceiving() {
+        visible = false
         nsd.unregister()
         server?.stop()
         server = null
@@ -81,6 +99,17 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandl
     }
 
     fun handleKey(event: KeyEvent): Boolean = engine.handleKey(event)
+
+    /**
+     * OK pressed on the idle screen: act on a pending update. Returns a settings screen to
+     * open (to allow installing updates), or null.
+     */
+    fun onIdleOk(): Intent? = when (updater.state.value) {
+        is UpdateState.NeedsPermission -> updater.permissionSettingsIntent()
+        is UpdateState.ReadyToInstall -> { updater.installIfReady(userInitiated = true); null }
+        is UpdateState.Failed -> { updater.check(userInitiated = true); null }
+        else -> null
+    }
 
     // ---- ReceiverHandler (called on server threads) --------------------------------
 

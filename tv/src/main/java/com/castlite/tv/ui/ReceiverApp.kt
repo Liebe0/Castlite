@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 fun ReceiverApp(vm: ReceiverViewModel) {
     val ui by vm.engine.ui.collectAsStateWithLifecycle()
     val info by vm.info.collectAsStateWithLifecycle()
+    val update by vm.updater.state.collectAsStateWithLifecycle()
 
     // The TV may still be joining Wi-Fi when the app opens: keep the shown IP fresh.
     LaunchedEffect(Unit) {
@@ -36,7 +37,7 @@ fun ReceiverApp(vm: ReceiverViewModel) {
     Box(Modifier.fillMaxSize().background(TvPalette.Background)) {
         val item = ui.item
         when {
-            item == null -> IdleScreen(info, ui.lastMessage)
+            item == null -> IdleScreen(info, ui.lastMessage, update, vm.updater.installedVersionName)
             item.type == MediaType.IMAGE -> PhotoScreen(
                 ui = ui,
                 onShown = vm.engine::onImageShown,

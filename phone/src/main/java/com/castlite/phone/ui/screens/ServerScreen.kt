@@ -43,6 +43,7 @@ import com.castlite.phone.ui.components.GradientButton
 import com.castlite.phone.ui.components.SectionHeader
 import com.castlite.phone.ui.components.StatusDot
 import com.castlite.phone.ui.theme.Palette
+import com.castlite.updater.UpdateState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,6 +55,7 @@ data class ServerActions(
     val copy: (String) -> Unit = {},
     val open: (String) -> Unit = {},
     val allowBackground: () -> Unit = {},
+    val checkForUpdates: () -> Unit = {},
 )
 
 /** Diagnostics: the phone's media server, its address, and what TVs have requested. */
@@ -140,6 +142,7 @@ fun ServerScreen(state: MainUiState, actions: ServerActions) {
                     }
                 }
             }
+            item { UpdatesCard(state, actions.checkForUpdates) }
             if (state.media.isNotEmpty() && state.baseUrl != null) {
                 item { SectionHeader("File URLs") }
                 items(state.media, key = { "u" + it.id }) { m ->
@@ -159,6 +162,31 @@ fun ServerScreen(state: MainUiState, actions: ServerActions) {
             } else {
                 items(state.requests) { RequestRow(it) }
             }
+        }
+    }
+}
+
+@Composable
+private fun UpdatesCard(state: MainUiState, onCheck: () -> Unit) {
+    AppCard(Modifier.fillMaxWidth()) {
+        val u = state.update
+        StatusRow(
+            ok = u !is UpdateState.Failed,
+            title = "CastLite ${state.appVersion}",
+            detail = when (u) {
+                UpdateState.Idle -> "Updates install automatically from GitHub"
+                UpdateState.Checking -> "Checking for updates…"
+                is UpdateState.UpToDate -> "Up to date · checked " +
+                    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(u.checkedAtMs))
+                is UpdateState.Downloading -> "Downloading ${u.version} · ${(u.progress * 100).toInt()}%"
+                is UpdateState.ReadyToInstall -> "${u.version} downloaded · installs when nothing is casting"
+                is UpdateState.NeedsPermission -> "${u.version} downloaded · allow \"Install unknown apps\" for CastLite"
+                is UpdateState.Installing -> "Installing ${u.version}…"
+                is UpdateState.Failed -> "Last check failed: ${u.message}"
+            },
+        )
+        TextButton(onClick = onCheck, modifier = Modifier.padding(start = 14.dp)) {
+            Text("Check for updates", color = Palette.Cyan)
         }
     }
 }

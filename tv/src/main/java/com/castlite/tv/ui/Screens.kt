@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.WarningAmber
@@ -69,6 +70,7 @@ import coil3.compose.AsyncImage
 import com.castlite.protocol.ReceiverState
 import com.castlite.tv.ReceiverInfoState
 import com.castlite.tv.playback.TvUiState
+import com.castlite.updater.UpdateState
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -83,7 +85,7 @@ private val SafeV = 32.dp
 // =====================================================================================
 
 @Composable
-fun IdleScreen(info: ReceiverInfoState, lastMessage: String?) {
+fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateState = UpdateState.Idle, version: String = "") {
     Box(Modifier.fillMaxSize()) {
         AmbientBackground()
         Column(Modifier.fillMaxSize().padding(horizontal = SafeH, vertical = SafeV)) {
@@ -92,7 +94,13 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?) {
                 Logo(36.dp)
                 Spacer(Modifier.width(14.dp))
                 Text("CastLite", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = TvPalette.TextPrimary)
+                if (version.isNotEmpty()) {
+                    Spacer(Modifier.width(10.dp))
+                    Text("v$version", fontSize = 15.sp, color = TvPalette.TextTertiary)
+                }
                 Spacer(Modifier.weight(1f))
+                UpdatePill(update)
+                Spacer(Modifier.width(20.dp))
                 Clock()
             }
 
@@ -132,6 +140,30 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?) {
                 StepCard(3, Icons.Filled.Tv, "Choose this TV", info.deviceName, Modifier.weight(1f))
             }
         }
+    }
+}
+
+/** Small status chip for the self-updater; OK on the remote acts on it. */
+@Composable
+private fun UpdatePill(update: UpdateState) {
+    val (text, highlight) = when (update) {
+        is UpdateState.Downloading -> "Downloading update ${(update.progress * 100).toInt()}%" to false
+        is UpdateState.ReadyToInstall -> "Update ${update.version} ready · press OK" to true
+        is UpdateState.NeedsPermission -> "Update ready · press OK to allow installing" to true
+        is UpdateState.Installing -> "Installing update…" to false
+        is UpdateState.Failed -> "Update check failed · press OK to retry" to false
+        else -> return
+    }
+    val color = if (highlight) TvPalette.Cyan else TvPalette.TextSecondary
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.12f))
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(50))
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.SystemUpdate, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, fontSize = 15.sp, color = color, fontWeight = FontWeight.Medium)
     }
 }
 

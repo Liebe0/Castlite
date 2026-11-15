@@ -6,7 +6,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.castlite.phone.cast.CastDevice
 import com.castlite.phone.cast.CastManager
+import com.castlite.phone.CastLiteApp
 import com.castlite.phone.cast.CastSession
+import com.castlite.updater.UpdateState
 import com.castlite.phone.data.AppPrefs
 import com.castlite.phone.data.PowerChecks
 import com.castlite.phone.data.PowerStatus
@@ -43,6 +45,8 @@ data class MainUiState(
     val slideDurationMs: Long = 5_000,
     val power: PowerStatus = PowerStatus(),
     val batteryPromptDismissed: Boolean = false,
+    val update: UpdateState = UpdateState.Idle,
+    val appVersion: String = "",
 ) {
     /** Show the "keep casting when the phone locks" card? */
     val showBackgroundPrompt: Boolean
@@ -64,6 +68,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = AppPrefs(app)
     private val power = MutableStateFlow(PowerChecks.read(app))
     private val batteryPromptDismissed = MutableStateFlow(prefs.batteryPromptDismissed)
+    private val updater = (app as CastLiteApp).updater
     private val localMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     /** Snackbar messages from this screen and from the casting session. */
@@ -75,10 +80,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         MediaLibrary.items,
         CastManager.selectedDevice,
         CastManager.session,
-        combine(CastManager.slideDurationMs, power, batteryPromptDismissed, ::Triple),
-    ) { (lan, server, requests), media, device, session, (slide, pwr, dismissed) ->
-        MainUiState(lan, server, media, requests, device, session, slide, pwr, dismissed)
+        combine(CastManager.slideDurationMs, power, batteryPromptDismissed, updater.state) { slide, pwr, dismissed, upd ->
+            Settings(slide, pwr, dismissed, upd)
+        },
+    ) { (lan, server, requests), media, device, session, settings ->
+        MainUiState(
+            lan, server, media, requests, device, session,
+            settings.slideDurationMs, settings.power, settings.batteryPromptDismissed, settings.update,
+            appVersion = updater.installedVersionName,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
+
+    private data class Settings(val slideDurationMs: Long, val power: PowerStatus, val batteryPromptDismissed: Boolean, val update: UpdateState)
 
     /** Called with the URIs returned by the system picker. */
     fun onMediaPicked(uris: List<Uri>) {
@@ -124,6 +137,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.batteryPromptDismissed = true
         batteryPromptDismissed.value = true
     }
+
+    fun checkForUpdates() = updater.check(userInitiated = true)
+
+    /** Installs a downloaded update now (even while casting — the user asked for it). */
+    fun installUpdate() = updater.installIfReady(userInitiated = true)
+
+    fun updatePermissionIntent() = updater.permissionSettingsIntent()
 
     fun showMessage(text: String) {
         localMessages.tryEmit(text)

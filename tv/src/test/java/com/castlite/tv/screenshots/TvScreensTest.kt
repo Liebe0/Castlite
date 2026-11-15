@@ -55,6 +55,10 @@ class TvScreensTest {
 
     @Test fun idle() = shot { IdleScreen(info, lastMessage = null) }
 
+    @Test fun idle_update_ready() = shot {
+        IdleScreen(info, lastMessage = null, update = com.castlite.updater.UpdateState.ReadyToInstall("1.1.12"), version = "1.1.11")
+    }
+
     @Test fun idle_after_session() = shot { IdleScreen(info, lastMessage = "Finished playing") }
 
     @Test fun idle_offline() = shot { IdleScreen(info.copy(ipAddress = null, listening = false), lastMessage = null) }

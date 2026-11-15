@@ -1,8 +1,8 @@
 name: Build APKs
 
-# On every push / PR: run all tests, render UI screenshots, build debug APKs for the
-# phone and TV apps, and upload everything as downloadable artifacts
-# (Actions tab → a run → "Artifacts").
+# On every push / PR: run all tests, render UI screenshots and build the phone and TV
+# APKs. On pushes it also publishes a GitHub Release ("CastLite 1.1.<run>") with both
+# APKs and update.json — the installed apps check that release and update themselves.
 on:
   push:
   pull_request:
@@ -11,6 +11,9 @@ on:
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write # needed to publish releases
 
 jobs:
   build:
@@ -31,29 +34,30 @@ jobs:
 
       # Runs every unit/integration test and records the Paparazzi screenshots.
       - name: Tests + screenshots
-        run: ./gradlew --stacktrace :protocol:test :phone:recordPaparazziDebug :tv:recordPaparazziDebug
+        run: ./gradlew --stacktrace :protocol:test :updater:testDebugUnitTest :phone:recordPaparazziDebug :tv:recordPaparazziDebug
 
+      # versionCode = 100 + run number (read from GITHUB_RUN_NUMBER in build.gradle.kts).
       - name: Build debug APKs
         run: ./gradlew --stacktrace :phone:assembleDebug :tv:assembleDebug
 
-      - name: Rename APKs
+      - name: Collect APKs
         run: |
           mkdir -p out
-          cp phone/build/outputs/apk/debug/phone-debug.apk out/CastLite-phone-debug.apk
-          cp tv/build/outputs/apk/debug/tv-debug.apk out/CastLite-tv-debug.apk
+          cp phone/build/outputs/apk/debug/phone-debug.apk out/CastLite-phone.apk
+          cp tv/build/outputs/apk/debug/tv-debug.apk out/CastLite-TV.apk
 
       - name: Upload phone APK
         uses: actions/upload-artifact@v4
         with:
-          name: CastLite-phone-debug
-          path: out/CastLite-phone-debug.apk
+          name: CastLite-phone
+          path: out/CastLite-phone.apk
           if-no-files-found: error
 
       - name: Upload TV APK
         uses: actions/upload-artifact@v4
         with:
-          name: CastLite-tv-debug
-          path: out/CastLite-tv-debug.apk
+          name: CastLite-TV
+          path: out/CastLite-TV.apk
           if-no-files-found: error
 
       - name: Upload screenshots
@@ -63,6 +67,41 @@ jobs:
           path: |
             phone/src/test/snapshots/images/
             tv/src/test/snapshots/images/
+
+      # The apps read releases/latest/download/update.json to find updates.
+      - name: Publish release (auto-update)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          RUN="${GITHUB_RUN_NUMBER}"
+          CODE=$((100 + RUN))
+          NAME="1.1.${RUN}"
+          TAG="build-${RUN}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          asset() {
+            jq -n --arg url "$BASE/$1" \
+                  --arg sha "$(sha256sum "out/$1" | cut -d' ' -f1)" \
+                  --argjson size "$(stat -c%s "out/$1")" \
+                  '{url: $url, sha256: $sha, size: $size}'
+          }
+          NOTES="$(git log -1 --pretty=%s)"
+          jq -n --argjson code "$CODE" --arg name "$NAME" --arg notes "$NOTES" \
+                --arg commit "${GITHUB_SHA::7}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --argjson phone "$(asset CastLite-phone.apk)" --argjson tv "$(asset CastLite-TV.apk)" \
+                '{versionCode: $code, versionName: $name, notes: $notes, commit: $commit,
+                  publishedAt: $at, phone: $phone, tv: $tv}' > out/update.json
+          cat out/update.json
+          gh release create "$TAG" out/CastLite-phone.apk out/CastLite-TV.apk out/update.json \
+            --title "CastLite $NAME" \
+            --notes "$NOTES (commit ${GITHUB_SHA::7}). Install CastLite-phone.apk on the phone and CastLite-TV.apk on the TV; after that they update themselves." \
+            --target "$GITHUB_SHA" --latest
+          # Keep only the 10 newest builds.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' \
+            | grep '^build-' | sort -t- -k2 -n -r | tail -n +11 \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag; done
 
       - name: Upload test reports
         if: failure()

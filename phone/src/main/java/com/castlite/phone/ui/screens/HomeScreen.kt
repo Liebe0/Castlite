@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.WifiOff
@@ -47,6 +48,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -83,6 +85,7 @@ import com.castlite.phone.ui.components.formatSize
 import com.castlite.phone.ui.components.label
 import com.castlite.phone.ui.theme.Palette
 import com.castlite.phone.ui.theme.color
+import com.castlite.updater.UpdateState
 
 /** Callbacks of the home screen, grouped so previews and tests can pass no-ops. */
 data class HomeActions(
@@ -98,6 +101,8 @@ data class HomeActions(
     val togglePlayPause: () -> Unit = {},
     val allowBackground: () -> Unit = {},
     val dismissBackgroundPrompt: () -> Unit = {},
+    val installUpdate: () -> Unit = {},
+    val allowUpdates: () -> Unit = {},
 )
 
 private val SLIDE_OPTIONS = listOf(3_000L, 5_000L, 8_000L, 15_000L)
@@ -127,6 +132,10 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
                 item { ErrorCard("Not connected to Wi-Fi. Join the same network as your TV.", icon = Icons.Filled.WifiOff) }
             }
             (state.server as? ServerState.Failed)?.let { item { ErrorCard(it.message) } }
+
+            updateBannerFor(state)?.let { banner ->
+                item { UpdateBanner(banner, actions) }
+            }
 
             item { DeviceCard(state.selectedDevice, actions.chooseDevice) }
 
@@ -284,6 +293,64 @@ private fun DeviceCard(device: CastDevice?, onClick: () -> Unit) {
                 }
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Change TV", tint = Palette.TextTertiary)
+        }
+    }
+}
+
+/** What the update banner should say, or null when there's nothing to show. */
+private data class UpdateBannerInfo(val title: String, val body: String, val progress: Float?, val action: String?, val needsPermission: Boolean)
+
+private fun updateBannerFor(state: MainUiState): UpdateBannerInfo? = when (val u = state.update) {
+    is UpdateState.Downloading -> UpdateBannerInfo("Downloading update ${u.version}", "CastLite will update itself when it's ready.", u.progress, null, false)
+    is UpdateState.ReadyToInstall -> UpdateBannerInfo(
+        "Update ${u.version} is ready",
+        if (state.session != null) "It installs automatically when you stop casting." else "Tap Install — CastLite restarts in a few seconds.",
+        null, "Install", false,
+    )
+    is UpdateState.NeedsPermission -> UpdateBannerInfo(
+        "Update ${u.version} is ready",
+        "Allow CastLite to install updates (once), then come back here.",
+        null, "Allow", true,
+    )
+    is UpdateState.Installing -> UpdateBannerInfo("Installing update ${u.version}…", "CastLite will restart.", -1f, null, false)
+    else -> null
+}
+
+@Composable
+private fun UpdateBanner(info: UpdateBannerInfo, actions: HomeActions) {
+    AppCard(
+        Modifier.fillMaxWidth(),
+        border = BorderStroke(1.dp, Brush.linearGradient(listOf(Palette.Cyan.copy(alpha = 0.6f), Palette.Violet.copy(alpha = 0.6f)))),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconDisc(Icons.Filled.SystemUpdate, Palette.Cyan, size = 44.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(info.title, style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary)
+                Spacer(Modifier.height(2.dp))
+                Text(info.body, style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary)
+            }
+            if (info.action != null) {
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(Palette.AccentHorizontal)
+                        .clickable(onClick = if (info.needsPermission) actions.allowUpdates else actions.installUpdate)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                ) { Text(info.action, style = MaterialTheme.typography.labelLarge, color = Color(0xFF0A0D14)) }
+            }
+        }
+        info.progress?.let { p ->
+            Spacer(Modifier.height(12.dp))
+            if (p < 0f) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(2.dp)), color = Palette.Cyan, trackColor = Palette.SurfaceHighest)
+            } else {
+                LinearProgressIndicator(
+                    progress = { p },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(2.dp)),
+                    color = Palette.Cyan,
+                    trackColor = Palette.SurfaceHighest,
+                )
+            }
         }
     }
 }

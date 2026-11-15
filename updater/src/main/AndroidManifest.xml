@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Needed to install our own updates (the user grants "Install unknown apps" once). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- "CastLite was updated — tap to open" (only posted if the app was granted it). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- Receives PackageInstaller results (confirm dialog, success, failure). -->
+        <receiver
+            android:name="com.castlite.updater.InstallResultReceiver"
+            android:exported="false" />
+        <!-- Reopens the app / tells the user after it updated itself. -->
+        <receiver
+            android:name="com.castlite.updater.UpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

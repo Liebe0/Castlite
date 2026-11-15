@@ -1,7 +1,10 @@
 package com.castlite.tv
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -60,6 +63,24 @@ class MainActivity : ComponentActivity() {
      * override as restricted, but overriding the platform method is supported.
      */
     @SuppressLint("RestrictedApi")
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean =
-        vm.handleKey(event) || super.dispatchKeyEvent(event)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (vm.handleKey(event)) return true
+        // On the idle screen, OK acts on a pending app update (allow / install / retry).
+        if (event.action == KeyEvent.ACTION_DOWN && vm.engine.ui.value.isIdle &&
+            (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || event.keyCode == KeyEvent.KEYCODE_ENTER)
+        ) {
+            vm.onIdleOk()?.let { intent ->
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    // Some TVs hide this screen; fall back to the app's own settings page.
+                    runCatching {
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                    }
+                }
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
 }

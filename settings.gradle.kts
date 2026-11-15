@@ -22,3 +22,5 @@ include(":phone")
 include(":tv")
 // Shared phone <-> TV receiver protocol (pure Kotlin, no Android).
 include(":protocol")
+// Self-updater shared by both apps (Android library).
+include(":updater")

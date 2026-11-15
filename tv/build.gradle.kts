@@ -16,8 +16,9 @@ android {
         applicationId = "com.castlite.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = rootProject.extra["castliteVersionCode"] as Int
+        versionName = rootProject.extra["castliteVersionName"] as String
+        buildConfigField("String", "UPDATE_MANIFEST_URL", "\"${rootProject.extra["castliteUpdateManifestUrl"]}\"")
     }
 
     signingConfigs {
@@ -48,6 +49,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     testOptions {
@@ -81,6 +83,8 @@ dependencies {
 
     // Phone <-> TV protocol: JSON models + the HTTP API server.
     implementation(project(":protocol"))
+    // Self-update from GitHub releases (shared with the other app).
+    implementation(project(":updater"))
     // Video and audio playback.
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)

@@ -123,6 +123,8 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                         togglePlayPause = vm::togglePlayPause,
                         allowBackground = allowBackground,
                         dismissBackgroundPrompt = vm::dismissBackgroundPrompt,
+                        installUpdate = vm::installUpdate,
+                        allowUpdates = { context.tryStart(vm.updatePermissionIntent()) },
                     ),
                 )
 
@@ -172,6 +174,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                         copy = { url -> context.copyToClipboard(url); vm.showMessage("URL copied") },
                         open = { url -> if (!context.openUrl(url)) vm.showMessage("No browser installed") },
                         allowBackground = allowBackground,
+                        checkForUpdates = vm::checkForUpdates,
                     ),
                 )
             }

@@ -106,6 +106,7 @@ add a discovery source to `DeviceRepository`, and implement `CastController` wit
 
 ```
 protocol/   Pure Kotlin: receiver API models, ReceiverApiServer, ReceiverClient
+updater/    Android library: self-update from GitHub releases (both apps)
 phone/      Sender app (com.castlite.phone)
   cast/         CastController interface, CastManager, DeviceRepository, models
   cast/dlna/    Ssdp, DeviceDescription, Soap, Didl, UpnpTime, DlnaController, DlnaDiscovery
@@ -126,14 +127,16 @@ wire format and it can be tested end-to-end on the JVM.
 
 ## Getting the APKs (no Android Studio needed)
 
-Every push builds everything on GitHub Actions:
+Every push to GitHub runs the tests, builds both apps and publishes a release:
 
-1. Open the repo on GitHub → **Actions** → **Build APKs** → the latest green run.
-2. Under **Artifacts** download **CastLite-phone-debug** and **CastLite-tv-debug**
-   (zips containing the APKs). **CastLite-screenshots** has renders of every screen.
+**➜ [github.com/Liebe0/Castlite/releases/latest](https://github.com/Liebe0/Castlite/releases/latest)**
+
+Download **CastLite-phone.apk** (phone) and **CastLite-TV.apk** (TV). You only do this
+once — after that both apps **update themselves** (see [Automatic updates](#automatic-updates)).
+Screenshots of every screen are attached to each Actions run as *CastLite-screenshots*.
 
 ### Install on the phone
-Unzip, open `CastLite-phone-debug.apk` on the phone and allow "Install unknown apps"
+Open `CastLite-phone.apk` on the phone and allow "Install unknown apps"
 for your browser / file manager when asked. Android 6.0 (API 24) or newer.
 
 ### Install on an Android TV
@@ -145,12 +148,12 @@ for your browser / file manager when asked. Android 6.0 (API 24) or newer.
 3. On a computer with [platform-tools](https://developer.android.com/tools/releases/platform-tools):
    ```sh
    adb connect 192.168.1.60:5555        # accept the prompt on the TV
-   adb install -r CastLite-tv-debug.apk
+   adb install -r CastLite-TV.apk
    ```
    (Android 11+ TVs with *Wireless debugging* show a pairing code: `adb pair <ip>:<port>` first.)
 
 **B. USB drive**
-1. Copy `CastLite-tv-debug.apk` to a FAT32/exFAT USB stick and plug it into the TV.
+1. Copy `CastLite-TV.apk` to a FAT32/exFAT USB stick and plug it into the TV.
 2. Install a file manager from the TV's Play Store (e.g. *File Commander*, *X-plore*),
    open the APK from the stick, and allow installing unknown apps for that file manager.
 
@@ -160,6 +163,33 @@ The app appears in the TV's app row as **CastLite TV**.
 Nothing to install. Make sure **LG Connect Apps** is on
 (*Settings → General → Devices → LG Connect Apps*; older models: *Network → LG Connect Apps*)
 and the TV is on the same Wi-Fi.
+
+### Automatic updates
+
+```
+git push ─► GitHub Actions: tests ─► build (versionCode = 100 + run) ─► Release "CastLite 1.1.<run>"
+                                                                        ├─ CastLite-phone.apk
+                                                                        ├─ CastLite-TV.apk
+                                                                        └─ update.json  (version, SHA-256, size)
+phone / TV app ─► releases/latest/download/update.json ─► newer? download ─► verify SHA-256 ─► install
+```
+
+- **When they check:** at start-up, when opened, and every 6 hours while running.
+- **When they install:** the phone only while the app is open and nothing is casting;
+  the TV only on its idle screen — an update never interrupts playback.
+- **What you'll see:**
+  - *Once per device*, Android asks you to allow CastLite to install apps (phone: tap
+    **Allow** on the update card; TV: press **OK** on the idle screen when it says so).
+  - Android 12+ phones may then update **silently**; Android TVs and older phones show
+    Android's one-tap **Update** dialog (press OK on the remote).
+  - The app restarts (the TV app reopens by itself where Android allows; the phone shows
+    "CastLite was updated — tap to open").
+- Downloads are checked against the SHA-256 in `update.json`, and Android only accepts an
+  update signed with the same key as the installed app.
+- The phone's *Network & server* screen shows the installed version and a
+  **Check for updates** button; the TV shows its version next to the logo.
+- Releases are public because the repository is public; only the 10 newest builds are kept.
+- Local (Android Studio) builds are "1.1.0-dev" and will update to the latest release.
 
 ### Signing
 Debug builds are signed with `keystore/debug.keystore` (committed on purpose, password
@@ -213,7 +243,7 @@ connection stays up and the TV-side buffer covers the extra latency.
 Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio covers both.
 
 ```sh
-./gradlew :protocol:test :phone:testDebugUnitTest :tv:testDebugUnitTest   # all tests
+./gradlew :protocol:test :updater:testDebugUnitTest :phone:testDebugUnitTest :tv:testDebugUnitTest   # all tests
 ./gradlew :phone:recordPaparazziDebug :tv:recordPaparazziDebug            # re-render screenshots
 ./gradlew :phone:assembleDebug :tv:assembleDebug
 # → phone/build/outputs/apk/debug/phone-debug.apk
@@ -228,6 +258,7 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 | `DlnaPrimitivesTest` | SSDP parsing, LG-style device descriptions, SOAP envelopes/faults, DIDL-Lite, time formats, MIME normalization, XXE rejection |
 | `DlnaControllerTest` | `DlnaController` against a fake UPnP renderer: load sequence, polling, seek/volume, auto-advance, interrupted vs. finished, slideshow, 701 retry, 714 errors, "TV never started", lost connection |
 | `KeepAwakePolicyTest`, `PatientLoadErrorPolicyTest` | Wake-lock idle policy, auto-resume after Wi-Fi changes, TV retry/backoff policy |
+| `UpdaterTest` | update.json parsing, version comparison, download through redirects, SHA-256/size verification, reuse |
 | `ProtocolTest`, `ReceiverCastControllerTest` | JSON format; phone client ↔ real TV API server end to end, errors, lost connection |
 | `QueueCursorTest`, `MediaLibraryTest`, `FileNamesTest` | Queue navigation, reordering, ids, host validation |
 | `PhoneScreensTest`, `TvScreensTest` | Render every screen (Paparazzi) |
