@@ -10,6 +10,9 @@ import com.castlite.phone.CastLiteApp
 import com.castlite.phone.cast.CastDevice
 import com.castlite.phone.cast.CastManager
 import com.castlite.phone.cast.CastSession
+import com.castlite.phone.cast.DeviceRepository
+import com.castlite.phone.cast.receiver.ReceiverDiscovery
+import com.castlite.protocol.TvQrCode
 import com.castlite.phone.data.AppPrefs
 import com.castlite.phone.data.PowerChecks
 import com.castlite.phone.data.PowerStatus
@@ -214,7 +217,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             Intent.ACTION_SEND_MULTIPLE -> uris += intent.streamListExtra()
             Intent.ACTION_VIEW -> intent.data?.let { data ->
-                if (data.scheme == "http" || data.scheme == "https") addLink(data.toString()) else uris += data
+                when (data.scheme) {
+                    "castlite" -> connectToTv(data.toString())
+                    "http", "https" -> addLink(data.toString())
+                    else -> uris += data
+                }
             }
             else -> return
         }
@@ -229,6 +236,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     @Suppress("DEPRECATION")
     private fun Intent.streamListExtra(): List<Uri> =
         (if (Build.VERSION.SDK_INT >= 33) getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) else getParcelableArrayListExtra(Intent.EXTRA_STREAM)).orEmpty()
+
+    /** The TV's QR code scanned with the phone's camera app opens castlite://connect?… */
+    private fun connectToTv(link: String) {
+        val target = TvQrCode.parse(link) ?: return run { localMessages.tryEmit("That CastLite link isn't valid") }
+        viewModelScope.launch {
+            busy.value = "Connecting to ${target.name ?: target.host}…"
+            try {
+                val device = ReceiverDiscovery.probe(target.host, target.port)
+                DeviceRepository(getApplication()).addManual(device)
+                CastManager.select(device)
+                localMessages.tryEmit("Connected to ${device.name}")
+            } catch (e: Exception) {
+                localMessages.tryEmit("Couldn't reach the TV at ${target.host}. Is CastLite open on it?")
+            } finally {
+                busy.value = null
+            }
+        }
+    }
 
     /** Drops queue items whose files were deleted (or lost permission) since last time. */
     fun pruneMissing() {

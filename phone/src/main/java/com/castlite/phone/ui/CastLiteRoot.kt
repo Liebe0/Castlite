@@ -55,11 +55,12 @@ import com.castlite.phone.ui.screens.NowPlayingScreen
 import com.castlite.phone.ui.screens.PlayerActions
 import com.castlite.phone.ui.screens.ServerActions
 import com.castlite.phone.ui.screens.ServerScreen
+import com.castlite.phone.ui.screens.ScanScreen
 import com.castlite.phone.ui.theme.Palette
 import kotlinx.coroutines.delay
 
 /** The app's screens. Navigation is a simple state machine — four screens don't need a nav library. */
-enum class Screen { HOME, DEVICES, PLAYER, SERVER }
+enum class Screen { HOME, DEVICES, PLAYER, SERVER, SCAN }
 
 /** MIME filters for the system picker: video, photos and audio; multiple selection allowed. */
 private val PICKER_TYPES = arrayOf("video/*", "image/*", "audio/*")
@@ -119,7 +120,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
         }
     }
 
-    BackHandler(enabled = screen != Screen.HOME) { screen = Screen.HOME }
+    BackHandler(enabled = screen != Screen.HOME) { screen = if (screen == Screen.SCAN) Screen.DEVICES else Screen.HOME }
 
     // Battery settings may have changed while the user was in system settings.
     LifecycleResumeEffect(Unit) {
@@ -194,6 +195,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                             toggleExtra = devicesVm::toggleExtra,
                             saveMac = devicesVm::saveMac,
                             wake = devicesVm::wake,
+                            scan = { screen = Screen.SCAN },
                         ),
                     )
                 }
@@ -219,6 +221,18 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                             ),
                         )
                     }
+                }
+
+                Screen.SCAN -> {
+                    val devicesVm: DevicesViewModel = viewModel()
+                    ScanScreen(
+                        onCode = { code ->
+                            screen = Screen.DEVICES
+                            devicesVm.addFromQr(code) { screen = Screen.HOME }
+                        },
+                        onClose = { screen = Screen.DEVICES },
+                        onEnterIp = { screen = Screen.DEVICES; devicesVm.showManualEntry() },
+                    )
                 }
 
                 Screen.SERVER -> ServerScreen(

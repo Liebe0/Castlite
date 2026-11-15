@@ -26,7 +26,8 @@ class DeviceRepository(context: Context) {
     private val dlna = DlnaDiscovery(context)
     private val receivers = ReceiverDiscovery(context)
 
-    private val _manual = MutableStateFlow(prefs.manualDevices)
+    // Shared by every instance (device picker, QR deep links), loaded once from prefs.
+    private val _manual: MutableStateFlow<List<CastDevice>> = sharedManual ?: MutableStateFlow(prefs.manualDevices).also { sharedManual = it }
     val manual: StateFlow<List<CastDevice>> = _manual.asStateFlow()
 
     /** Live list while collected (discovery runs only while someone is watching). */
@@ -34,11 +35,7 @@ class DeviceRepository(context: Context) {
         receivers.devices().catch { emit(emptyList()) }.onStart { emit(emptyList()) },
         dlna.devices().catch { emit(emptyList()) }.onStart { emit(emptyList()) },
         _manual,
-    ) { castlite, renderers, manual ->
-        val discoveredIds = (castlite + renderers).map { it.id }.toSet()
-        // CastLite TV app first (best experience), then DLNA, then manual entries not seen live.
-        castlite + renderers + manual.filter { it.id !in discoveredIds }
-    }
+    ) { castlite, renderers, manual -> merge(castlite, renderers, manual) }
 
     fun addManual(device: CastDevice) = _manual.update { list ->
         (list.filterNot { it.id == device.id } + device).also { prefs.manualDevices = it }
@@ -46,5 +43,23 @@ class DeviceRepository(context: Context) {
 
     fun removeManual(device: CastDevice) = _manual.update { list ->
         list.filterNot { it.id == device.id }.also { prefs.manualDevices = it }
+    }
+
+    companion object {
+        @Volatile private var sharedManual: MutableStateFlow<List<CastDevice>>? = null
+
+        /**
+         * One entry per TV (pure, unit-tested). CastLite TV apps come first (best
+         * experience), then DLNA renderers, then manually added TVs not seen live.
+         * Many Android TVs also have a built-in DLNA renderer: when a DLNA entry has the
+         * same IP as a CastLite TV app, it's the same TV, so only the CastLite one is shown.
+         */
+        fun merge(castlite: List<CastDevice>, renderers: List<CastDevice>, manual: List<CastDevice>): List<CastDevice> {
+            val castliteHosts = (castlite + manual.filter { it.protocol == CastProtocol.CASTLITE }).map { it.host }.toSet()
+            val shownRenderers = renderers.filter { it.host !in castliteHosts }
+            val liveIds = (castlite + shownRenderers).map { it.id }.toSet()
+            val liveCastliteHosts = castlite.map { it.host }.toSet()
+            return castlite + shownRenderers + manual.filter { it.id !in liveIds && it.host !in liveCastliteHosts }
+        }
     }
 }

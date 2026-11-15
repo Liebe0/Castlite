@@ -116,7 +116,7 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateStat
             Spacer(Modifier.weight(1f))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1.1f)) {
+                Column(Modifier.weight(1f)) {
                     StatusPill(info)
                     Spacer(Modifier.height(20.dp))
                     Text(
@@ -138,7 +138,7 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateStat
                     }
                 }
                 Spacer(Modifier.width(40.dp))
-                AddressCard(info, Modifier.weight(0.9f))
+                AddressCard(info, Modifier.weight(1f))
             }
 
             Spacer(Modifier.weight(1f))
@@ -146,7 +146,7 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateStat
             Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                 StepCard(1, Icons.Filled.PhoneAndroid, "Open CastLite", "on your phone", Modifier.weight(1f))
                 StepCard(2, Icons.Filled.VideoLibrary, "Pick media", "video · photo · music", Modifier.weight(1f))
-                StepCard(3, Icons.Filled.Tv, "Choose this TV", info.deviceName, Modifier.weight(1f))
+                StepCard(3, Icons.Filled.Tv, "Choose this TV", "or scan the code", Modifier.weight(1f))
             }
         }
     }
@@ -208,29 +208,37 @@ private fun AddressCard(info: ReceiverInfoState, modifier: Modifier) {
         modifier.clip(RoundedCornerShape(28.dp))
             .background(TvPalette.Surface.copy(alpha = 0.85f))
             .border(1.dp, Brush.linearGradient(listOf(TvPalette.Cyan.copy(alpha = 0.5f), TvPalette.Violet.copy(alpha = 0.5f))), RoundedCornerShape(28.dp))
-            .padding(32.dp),
+            .padding(28.dp),
     ) {
-        Text("TV ADDRESS", fontSize = 14.sp, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold, color = TvPalette.TextTertiary)
-        Spacer(Modifier.height(10.dp))
-        val ip = info.ipAddress ?: "—"
-        Text(
-            ip,
-            // Long addresses (e.g. 192.168.100.200) get a smaller size so they stay on one line.
-            fontSize = if (ip.length > 13) 32.sp else 40.sp,
-            fontWeight = FontWeight.Bold,
-            color = TvPalette.TextPrimary,
-            maxLines = 1,
-            softWrap = false,
-            letterSpacing = 0.5.sp,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text("port ${info.port}", fontSize = 18.sp, fontFamily = FontFamily.Monospace, color = TvPalette.Cyan)
-        Spacer(Modifier.height(18.dp))
-        Text(
-            "Not listed on the phone? Tap “Enter TV IP address” and type this number.",
-            fontSize = 16.sp,
-            color = TvPalette.TextSecondary,
-        )
+        Text("CONNECT YOUR PHONE", fontSize = 14.sp, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold, color = TvPalette.TextTertiary)
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val ip = info.ipAddress
+            if (ip != null) {
+                // Scan with CastLite (Choose a TV → Scan TV code) or the phone's camera app.
+                QrCode(com.castlite.protocol.TvQrCode.build(ip, info.port, info.deviceName), Modifier.size(132.dp))
+                Spacer(Modifier.width(22.dp))
+            }
+            Column {
+                Text(
+                    ip ?: "—",
+                    // Long addresses (e.g. 192.168.100.200) get a smaller size so they stay on one line.
+                    fontSize = if ((ip?.length ?: 0) > 13) 24.sp else 30.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TvPalette.TextPrimary,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text("port ${info.port}", fontSize = 16.sp, fontFamily = FontFamily.Monospace, color = TvPalette.Cyan)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (ip != null) "Scan the code with CastLite, or type this address on the phone." else "Connect the TV to Wi-Fi or Ethernet.",
+                    fontSize = 15.sp,
+                    color = TvPalette.TextSecondary,
+                )
+            }
+        }
     }
 }
 

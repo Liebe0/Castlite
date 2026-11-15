@@ -172,6 +172,26 @@ class PhoneScreensTest {
         )
     }
 
+    /** The scanner asks for camera permission via the activity; give it a no-op stand-in. */
+    private val fakeResults = object : androidx.activity.result.ActivityResultRegistryOwner {
+        override val activityResultRegistry = object : androidx.activity.result.ActivityResultRegistry() {
+            override fun <I, O> onLaunch(
+                requestCode: Int,
+                contract: androidx.activity.result.contract.ActivityResultContract<I, O>,
+                input: I,
+                options: androidx.core.app.ActivityOptionsCompat?,
+            ) = Unit
+        }
+    }
+
+    @Test fun scanner() = shot {
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.activity.compose.LocalActivityResultRegistryOwner provides fakeResults,
+        ) {
+            com.castlite.phone.ui.screens.ScanScreen(onCode = {}, onClose = {}, onEnterIp = {}, camera = false)
+        }
+    }
+
     @Test fun server() = shot {
         ServerScreen(
             MainUiState(

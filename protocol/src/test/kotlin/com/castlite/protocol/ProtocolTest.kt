@@ -164,3 +164,24 @@ class ProtocolV2Test {
         }
     }
 }
+
+class TvQrCodeTest {
+    @Test fun roundTrip() {
+        val link = TvQrCode.build("192.168.1.60", 8766, "Living Room TV & Co")
+        assertTrue(link.startsWith("castlite://connect?host=192.168.1.60&port=8766&name="))
+        assertEquals(TvQrCode.Target("192.168.1.60", 8766, "Living Room TV & Co"), TvQrCode.parse(link))
+    }
+
+    @Test fun acceptsPlainAddresses() {
+        assertEquals(TvQrCode.Target("10.0.0.5"), TvQrCode.parse(" 10.0.0.5 "))
+        assertEquals(TvQrCode.Target("10.0.0.5", 9000), TvQrCode.parse("10.0.0.5:9000"))
+        assertEquals(TvQrCode.Target("10.0.0.5", 8766), TvQrCode.parse("http://10.0.0.5:8766/api/info"))
+    }
+
+    @Test fun rejectsOtherQrCodes() {
+        assertEquals(null, TvQrCode.parse("https://example.com/menu"))
+        assertEquals(null, TvQrCode.parse("WIFI:S:Home;T:WPA;P:secret;;"))
+        assertEquals(null, TvQrCode.parse("castlite://connect?host=bad host!"))
+        assertEquals(null, TvQrCode.parse("999.1.1.1"))
+    }
+}

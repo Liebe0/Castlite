@@ -95,8 +95,8 @@ class ReceiverDiscovery(context: Context) {
          * Checks that a manually entered IP runs the CastLite TV app.
          * @throws Exception with a readable message if it doesn't answer.
          */
-        suspend fun probe(host: String): CastDevice = withContext(Dispatchers.IO) {
-            val info = ReceiverClient(host, connectTimeoutMs = 2_500, readTimeoutMs = 3_000).info()
+        suspend fun probe(host: String, port: Int = ReceiverProtocol.PORT): CastDevice = withContext(Dispatchers.IO) {
+            val info = ReceiverClient(host, port, connectTimeoutMs = 2_500, readTimeoutMs = 3_000).info()
             CastDevice(
                 id = "castlite:$host",
                 name = info.name,
@@ -104,6 +104,7 @@ class ReceiverDiscovery(context: Context) {
                 host = host,
                 manufacturer = "CastLite TV app",
                 model = info.model,
+                receiverPort = port,
                 isManual = true,
             )
         }

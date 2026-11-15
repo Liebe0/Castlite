@@ -94,6 +94,8 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.hls) // HLS (.m3u8) web links
+    // QR code with the TV's address on the idle screen.
+    implementation(libs.zxing.core)
     // Photos (with EXIF rotation, crossfade and caching).
     implementation(libs.coil.compose)
     implementation(libs.coil.network)

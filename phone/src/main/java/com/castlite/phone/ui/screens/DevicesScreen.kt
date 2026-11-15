@@ -24,6 +24,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.QrCodeScanner
+import com.castlite.phone.ui.components.GradientButton
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -83,6 +86,7 @@ data class DevicesActions(
     /** Returns an error message, or null when saved. */
     val saveMac: (CastDevice, String) -> String? = { _, _ -> null },
     val wake: (CastDevice) -> Unit = {},
+    val scan: () -> Unit = {},
 )
 
 @Composable
@@ -144,14 +148,17 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
             if (state.devices.isEmpty()) item { Tips() }
 
             item {
-                OutlinedButton(
-                    onClick = actions.showManualEntry,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(52.dp),
-                    border = BorderStroke(1.dp, Palette.OutlineStrong),
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null, tint = Palette.Cyan)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Enter TV IP address", color = Palette.TextPrimary)
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GradientButton("Scan TV code", actions.scan, icon = Icons.Filled.QrCodeScanner, modifier = Modifier.weight(1f))
+                    OutlinedButton(
+                        onClick = actions.showManualEntry,
+                        modifier = Modifier.weight(1f).height(54.dp),
+                        border = BorderStroke(1.dp, Palette.OutlineStrong),
+                    ) {
+                        Icon(Icons.Filled.Keyboard, contentDescription = null, tint = Palette.Cyan)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Enter IP", color = Palette.TextPrimary)
+                    }
                 }
             }
         }
@@ -341,7 +348,7 @@ private fun Tips() {
         listOf(
             "Phone and TV must be on the same Wi-Fi network (not a guest network).",
             "LG webOS: turn on Settings → General → Devices → \"LG Connect Apps\" (older models: Network → LG Connect Apps).",
-            "Android TV: install and open the CastLite TV app. It shows its IP address if you need to add it by hand.",
+            "Android TV: install and open the CastLite TV app, then tap \"Scan TV code\" and point at the code on the TV.",
             "Samsung / Sony / Philips: DLNA is usually on by default. Wake the TV first.",
         ).forEach { tip ->
             Row(Modifier.padding(vertical = 4.dp)) {
@@ -363,7 +370,7 @@ private fun ManualIpDialog(error: String?, checking: Boolean, actions: DevicesAc
         text = {
             Column {
                 Text(
-                    "Open CastLite on the TV — it shows its address on the start screen.",
+                    "Open CastLite on the TV — its address is on the start screen (or scan the code there instead).",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Palette.TextSecondary,
                 )

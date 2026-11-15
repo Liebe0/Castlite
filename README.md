@@ -28,7 +28,7 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 | | |
 |---|---|
 | **Add media** | System picker (many at once), **a whole folder** (sorted naturally, subtitles paired automatically), **web links** (.mp4/.mp3/.jpg or live **.m3u8**), and **Share → CastLite / Open with CastLite** from any app. The queue is saved and survives restarts. |
-| **Discover** | DLNA renderers via SSDP · CastLite TV apps via mDNS/NSD · "Enter TV IP" fallback (remembered). |
+| **Discover** | DLNA renderers via SSDP · CastLite TV apps via mDNS/NSD · **scan the QR code on the TV** · "Enter IP" fallback (remembered). A TV seen both ways (Android TVs often have built-in DLNA) is listed once. |
 | **Control** | Play / pause, seek, previous / next, jump to any item, stop, TV volume, re-send, **repeat (off / all / one)**, **shuffle**. |
 | **Resume** | Long videos/songs remember where you stopped: "Continue watching? Resume at 12:34 / Start over". |
 | **Will it play?** | Each file's codecs are read on the phone and compared with what the TV can decode (CastLite TV app reports its decoders; DLNA TVs list accepted formats) → "May not play: DTS audio" *before* you cast. |
@@ -213,7 +213,9 @@ don't use it for anything you publish.
 
 1. Open **CastLite** on the phone → **Add media** → pick videos, photos and/or music.
 2. Tap **Choose a TV** → pick your LG (DLNA badge) or Android TV (CastLite badge).
-   Not listed? **Enter TV IP address** with the address shown on the CastLite TV screen.
+   Not listed? Tap **Scan TV code** and point the phone at the QR code on the CastLite TV
+   start screen (or **Enter IP** and type the address shown there). Scanning the code with
+   the phone's normal camera app works too — it opens CastLite and connects.
 3. Tap **Cast** (or tap any item to start from it). The now-playing screen has seek,
    play/pause, previous/next, volume and the queue.
 4. On the TV remote (CastLite TV app): **OK** play/pause · **◀ ▶** seek 10 s (photos: previous/next) ·
@@ -241,6 +243,11 @@ Android asks for permission each time. Sound needs Android 10+ and the microphon
 permission (only the phone's playback is captured, never the mic); some apps (e.g.
 Netflix) block capture of their picture or sound. For LG TVs, use your phone's own
 *Screen Cast / Smart View* if it has one — DLNA can't mirror.
+
+**When casting ends**, the phone forgets the session by itself: when the TV is stopped
+(remote, TV app closed), shortly after the queue finishes, or when you remove the file
+that's playing. Closing CastLite from Recents while nothing is casting also shuts down
+its server and notification.
 
 **"May not play" warnings** are hints, not blocks: TVs sometimes play more (or less)
 than they report.

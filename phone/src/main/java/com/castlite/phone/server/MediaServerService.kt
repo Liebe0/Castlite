@@ -225,6 +225,19 @@ class MediaServerService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
+    /**
+     * The app was swiped away from Recents. Keep going while a TV is playing from us;
+     * otherwise shut down (server, notification, stale session) so nothing lingers.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!CastManager.isBusy) {
+            Log.i(TAG, "App closed and nothing is casting — stopping")
+            CastManager.stop()
+            stopSelf()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         scope.cancel()
         server?.stop()

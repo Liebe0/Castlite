@@ -97,6 +97,11 @@ dependencies {
     // Thumbnails for the queue (photos and video frames).
     implementation(libs.coil.compose)
     implementation(libs.coil.video)
+    // Scanning the TV's QR code: CameraX preview + ZXing decoder (no Google Play services).
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
+    implementation(libs.zxing.core)
     // MediaSession: lock-screen controls and volume keys → TV volume while the phone is locked.
     implementation(libs.androidx.media)
 

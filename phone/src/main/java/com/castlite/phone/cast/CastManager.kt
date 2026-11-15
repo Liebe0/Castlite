@@ -134,8 +134,31 @@ object CastManager {
         _repeat.value = prefs.repeat
         _macs.value = prefs.macs
         watchWifi()
+        watchQueue()
         _selected.value?.let { refreshSupport(it) }
     }
+
+    /** Removing the file that's on the TV (or clearing the queue) stops casting it. */
+    private fun watchQueue() {
+        scope.launch {
+            MediaLibrary.items.collect { items ->
+                val s = _session.value ?: return@collect
+                val current = s.current ?: return@collect
+                if (s.status.state == PlayerState.CONNECTING) return@collect
+                if (items.none { it.id == current.id }) {
+                    Diag.log("cast", "${current.displayName} was removed from the queue — stopping")
+                    emit("Stopped casting ${current.displayName}")
+                    endSession(stopTv = true)
+                }
+            }
+        }
+    }
+
+    /** True while a TV is actually using the phone (used when the app is closed). */
+    val isBusy: Boolean
+        get() = _session.value?.status?.state.let {
+            it == PlayerState.CONNECTING || it == PlayerState.LOADING || it == PlayerState.PLAYING || it == PlayerState.PAUSED
+        }
 
     fun select(device: CastDevice) {
         if (_selected.value?.id != device.id) endSession(stopTv = false)
@@ -243,10 +266,18 @@ object CastManager {
                 controller = c
                 var lastIndex = index
                 var lastSave = 0L
+                val endPolicy = SessionEndPolicy()
                 statusJob = launch {
                     c.status.collect { st ->
                         // Keep CONNECTING visible until the controller reports something real.
                         if (st.state == PlayerState.IDLE && _session.value?.status?.state == PlayerState.CONNECTING) return@collect
+                        // The TV stopped or finished: end the session so no stale mini player stays behind.
+                        if (endPolicy.onStatus(st.state, System.currentTimeMillis()) == SessionEndPolicy.Verdict.END_NOW) {
+                            Diag.log("cast", "TV went idle — ending the session")
+                            scope.launch { endSession(stopTv = false) }
+                            return@collect
+                        }
+                        if (st.state == PlayerState.ENDED) scheduleEndCheck(c, endPolicy)
                         val session = _session.value
                         // Resume positions: remember where long videos/songs are; forget finished ones.
                         if (session != null) {
@@ -283,6 +314,22 @@ object CastManager {
                 Log.w(TAG, "Cast failed", e)
                 Diag.log("cast", "Cast failed: ${e.readable()}")
                 _session.update { it?.copy(status = it.status.copy(state = PlayerState.ERROR, error = e.readable())) }
+            }
+        }
+    }
+
+    private var endCheckJob: Job? = null
+
+    /** A finished session gets no more status changes, so re-check it after the grace period. */
+    private fun scheduleEndCheck(c: CastController, policy: SessionEndPolicy) {
+        if (endCheckJob?.isActive == true) return
+        endCheckJob = scope.launch {
+            delay(21_000)
+            if (controller === c && c.status.value.state == PlayerState.ENDED &&
+                policy.onStatus(PlayerState.ENDED, System.currentTimeMillis()) == SessionEndPolicy.Verdict.END_NOW
+            ) {
+                Diag.log("cast", "Queue finished — ending the session")
+                endSession(stopTv = false)
             }
         }
     }
@@ -357,6 +404,8 @@ object CastManager {
     }
 
     private fun releaseController() {
+        endCheckJob?.cancel()
+        endCheckJob = null
         statusJob?.cancel()
         statusJob = null
         controller?.release()

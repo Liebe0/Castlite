@@ -10,6 +10,8 @@ import com.castlite.phone.cast.receiver.ReceiverDiscovery
 import com.castlite.phone.net.LanMonitor
 import com.castlite.phone.net.LanStatus
 import com.castlite.phone.net.WakeOnLan
+import com.castlite.protocol.ReceiverProtocol
+import com.castlite.protocol.TvQrCode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,17 +79,32 @@ class DevicesViewModel(app: Application) : AndroidViewModel(app) {
         manual.value = ManualEntry.Hidden
     }
 
-    /** Checks that [input] runs the CastLite TV app, then adds and selects it. */
+    /** A code scanned from the TV's start screen. */
+    fun addFromQr(text: String, onAdded: () -> Unit) {
+        val target = TvQrCode.parse(text)
+        if (target == null) {
+            manual.value = ManualEntry.Editing("That code isn't from the CastLite TV app.")
+            return
+        }
+        connect(target.host, target.port, onAdded)
+    }
+
+    /** Checks that [input] ("192.168.1.50" or "192.168.1.50:8766") runs the CastLite TV app, then adds and selects it. */
     fun addByIp(input: String, onAdded: () -> Unit) {
-        val host = input.trim()
+        val host = input.trim().substringBefore(':')
+        val port = input.trim().substringAfter(':', "").toIntOrNull() ?: ReceiverProtocol.PORT
         if (!isValidHost(host)) {
             manual.value = ManualEntry.Editing("That doesn't look like an IP address (e.g. 192.168.1.50)")
             return
         }
+        connect(host, port, onAdded)
+    }
+
+    private fun connect(host: String, port: Int, onAdded: () -> Unit) {
         manual.value = ManualEntry.Checking
         viewModelScope.launch {
             try {
-                val device = ReceiverDiscovery.probe(host)
+                val device = ReceiverDiscovery.probe(host, port)
                 repository.addManual(device)
                 CastManager.select(device)
                 manual.value = ManualEntry.Hidden
