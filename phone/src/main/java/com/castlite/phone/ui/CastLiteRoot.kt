@@ -196,6 +196,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                             saveMac = devicesVm::saveMac,
                             wake = devicesVm::wake,
                             scan = { screen = Screen.SCAN },
+                            searchOtherRouters = devicesVm::searchOtherRouters,
                         ),
                     )
                 }

@@ -12,9 +12,12 @@ import com.castlite.protocol.ReceiverHandler
 import com.castlite.protocol.ReceiverInfo
 import com.castlite.protocol.ReceiverProtocol
 import com.castlite.protocol.ReceiverStatus
+import com.castlite.protocol.TunnelProtocol
+import com.castlite.protocol.TunnelServer
 import com.castlite.tv.mirror.MirrorReceiver
 import com.castlite.tv.net.NsdAdvertiser
 import com.castlite.tv.playback.PlaybackEngine
+import com.castlite.updater.AppUpdater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +47,7 @@ data class ReceiverInfoState(
 object ReceiverRuntime : ReceiverHandler {
 
     private lateinit var app: Application
+    private var updater: AppUpdater? = null
     private val scope = MainScope()
 
     lateinit var engine: PlaybackEngine
@@ -52,6 +56,9 @@ object ReceiverRuntime : ReceiverHandler {
         private set
 
     private val nsd by lazy { NsdAdvertiser(app) }
+    /** Lets a phone behind another router send media (see TunnelProtocol). */
+    private val tunnel by lazy { TunnelServer(TunnelProtocol.PORT) { TvLog.log("tunnel", it) } }
+    private var tunnelUp = false
     private var server: ReceiverApiServer? = null
     private lateinit var deviceName: String
 
@@ -61,9 +68,10 @@ object ReceiverRuntime : ReceiverHandler {
     /** True while MainActivity is on screen. */
     val activityVisible = MutableStateFlow(false)
 
-    fun init(application: Application) {
+    fun init(application: Application, appUpdater: AppUpdater? = null) {
         if (::app.isInitialized) return
         app = application
+        updater = appUpdater
         deviceName = Settings.Global.getString(app.contentResolver, "device_name")?.takeIf { it.isNotBlank() } ?: Build.MODEL
         _info.value = ReceiverInfoState(deviceName, LocalAddress.ipv4())
         engine = PlaybackEngine(app, scope)
@@ -98,12 +106,23 @@ object ReceiverRuntime : ReceiverHandler {
             }
         }
         mirror.start()
+        if (!tunnelUp) {
+            tunnelUp = try {
+                tunnel.start()
+                true
+            } catch (e: IOException) {
+                TvLog.log("tunnel", "Couldn't open port ${TunnelProtocol.PORT}: ${e.message}")
+                false
+            }
+        }
         nsd.register(deviceName, ReceiverProtocol.PORT)
     }
 
     fun stop() {
         nsd.unregister()
         mirror.stop()
+        tunnel.close()
+        tunnelUp = false
         server?.stop()
         server = null
         _info.value = _info.value.copy(listening = false)
@@ -123,12 +142,19 @@ object ReceiverRuntime : ReceiverHandler {
 
     // ---- ReceiverHandler (called on server threads) --------------------------------
 
-    override fun info() = ReceiverInfo(
+    override fun info(): ReceiverInfo {
+        // A phone is looking at this TV: a good moment to see if CastLite has an update.
+        updater?.nudge()
+        return receiverInfo()
+    }
+
+    private fun receiverInfo() = ReceiverInfo(
         name = deviceName,
         model = "${Build.MANUFACTURER} ${Build.MODEL}",
         appVersion = appVersion(),
         capabilities = DecoderCapabilities.current,
         mirrorPort = MirrorProtocol.PORT,
+        tunnelPort = TunnelProtocol.PORT.takeIf { tunnelUp },
     )
 
     override fun status(): ReceiverStatus = engine.status().copy(mirroring = mirror.state.value.active)
@@ -157,6 +183,7 @@ object ReceiverRuntime : ReceiverHandler {
         appendLine("Name: $deviceName, IP: ${_info.value.ipAddress}, listening: ${_info.value.listening}")
         appendLine("App on screen: ${activityVisible.value}, can draw overlays: ${canDrawOverlays()}")
         appendLine("Decoders: ${DecoderCapabilities.current}")
+        updater?.let { appendLine(it.describe()) }
         appendLine("Status: ${status()}")
         appendLine("Mirror: ${mirror.state.value}")
         appendLine()

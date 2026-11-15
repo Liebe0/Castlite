@@ -8,7 +8,13 @@ import com.castlite.tv.mirror.MirrorState
 import com.castlite.tv.playback.PlaybackEngine
 import com.castlite.updater.AppUpdater
 import com.castlite.updater.UpdateState
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /** Thin bridge between the TV screens and the always-on [ReceiverRuntime]. */
 class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
@@ -18,7 +24,38 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
     val mirror: StateFlow<MirrorState> get() = ReceiverRuntime.mirror.state
     val updater: AppUpdater = (app as CastLiteTvApp).updater
 
+    private val _ambient = MutableStateFlow(false)
+    /** The idle screen has been left alone for a while: show the big wandering clock. */
+    val ambient: StateFlow<Boolean> = _ambient.asStateFlow()
+    @Volatile private var lastInputMs = System.currentTimeMillis()
+
+    init {
+        viewModelScope.launch {
+            while (isActive) {
+                delay(5_000)
+                val idle = engine.ui.value.item == null && !mirror.value.active
+                val now = System.currentTimeMillis()
+                if (!idle) {
+                    // Back from a cast: show the connect screen first, ambient later.
+                    lastInputMs = now
+                    _ambient.value = false
+                } else if (!_ambient.value && now - lastInputMs > AMBIENT_AFTER_MS) {
+                    _ambient.value = true
+                }
+            }
+        }
+    }
+
+    /** A remote key was pressed. Returns true if it only woke the screen from ambient mode. */
+    fun onUserInput(): Boolean {
+        lastInputMs = System.currentTimeMillis()
+        if (!_ambient.value) return false
+        _ambient.value = false
+        return true
+    }
+
     fun onScreenVisible() {
+        onUserInput()
         ReceiverService.start(getApplication())
         ReceiverRuntime.start() // idempotent; works even if a TV refuses the background service
         ReceiverRuntime.activityVisible.value = true
@@ -26,7 +63,10 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
         refreshAddress()
     }
 
-    fun onScreenHidden() = ReceiverRuntime.onActivityHidden()
+    fun onScreenHidden() {
+        ReceiverRuntime.onActivityHidden()
+        updater.onBackground()
+    }
 
     fun refreshAddress() = ReceiverRuntime.refreshAddress()
 
@@ -42,13 +82,17 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * OK pressed on the idle screen: act on a pending update. Returns a settings screen to
-     * open (to allow installing updates), or null.
+     * OK pressed on the idle screen: act on a pending update, or check for one now.
+     * Returns a settings screen to open (to allow installing updates), or null.
      */
     fun onIdleOk(): Intent? = when (updater.state.value) {
         is UpdateState.NeedsPermission -> updater.permissionSettingsIntent()
         is UpdateState.ReadyToInstall -> { updater.installIfReady(userInitiated = true); null }
-        is UpdateState.Failed -> { updater.check(userInitiated = true); null }
-        else -> null
+        is UpdateState.Downloading, is UpdateState.Installing, UpdateState.Checking -> null
+        else -> { updater.check(userInitiated = true); null }
+    }
+
+    private companion object {
+        const val AMBIENT_AFTER_MS = 2 * 60_000L
     }
 }

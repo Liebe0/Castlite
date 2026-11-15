@@ -45,6 +45,8 @@ data class CastDevice(
     val isManual: Boolean = false,
     /** For Wake-on-LAN ("Turn on TV"); entered by the user. */
     val mac: String? = null,
+    /** Found by "Search other routers" on a network above the phone's (chained routers). */
+    val otherRouter: Boolean = false,
 ) {
     /** "LG Electronics · OLED55C1" style subtitle. */
     val details: String

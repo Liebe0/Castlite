@@ -79,37 +79,37 @@ class DlnaDiscovery(context: Context) {
         }
     }.flowOn(Dispatchers.IO)
 
-    /** Downloads and parses a device description; null if it isn't a usable renderer. */
-    private fun describe(reply: SsdpResponse): CastDevice? = try {
-        val conn = (URL(reply.location).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 3_000
-            readTimeout = 4_000
-        }
-        val xml = try {
-            conn.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
-        } finally {
-            conn.disconnect()
-        }
-        DeviceDescriptionParser.parse(xml, reply.location)?.let { d ->
-            CastDevice(
-                id = d.udn,
-                name = d.friendlyName,
-                protocol = CastProtocol.DLNA,
-                host = URL(reply.location).host,
-                manufacturer = d.manufacturer,
-                model = d.modelName,
-                dlna = DlnaEndpoints(reply.location, d.avTransportControlUrl, d.renderingControlUrl, d.connectionManagerUrl),
-            ).also { Diag.log("ssdp", "Found ${it.name} (${it.details}) at ${reply.location}, server=${reply.server}") }
-        }
-    } catch (e: Exception) {
-        Diag.log("ssdp", "Ignoring ${reply.location}: ${e.message}")
-        null
-    }
+    companion object {
+        private const val TAG = "DlnaDiscovery"
+        private const val SEARCH_WINDOW_MS = 3_000
+        private const val REPEAT_EVERY_MS = 6_000L
+        private const val STALE_AFTER_MS = 45_000L
 
-    private companion object {
-        const val TAG = "DlnaDiscovery"
-        const val SEARCH_WINDOW_MS = 3_000
-        const val REPEAT_EVERY_MS = 6_000L
-        const val STALE_AFTER_MS = 45_000L
+        /** Downloads and parses a device description; null if it isn't a usable renderer. */
+        fun describe(reply: SsdpResponse): CastDevice? = try {
+            val conn = (URL(reply.location).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3_000
+                readTimeout = 4_000
+            }
+            val xml = try {
+                conn.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
+            } finally {
+                conn.disconnect()
+            }
+            DeviceDescriptionParser.parse(xml, reply.location)?.let { d ->
+                CastDevice(
+                    id = d.udn,
+                    name = d.friendlyName,
+                    protocol = CastProtocol.DLNA,
+                    host = URL(reply.location).host,
+                    manufacturer = d.manufacturer,
+                    model = d.modelName,
+                    dlna = DlnaEndpoints(reply.location, d.avTransportControlUrl, d.renderingControlUrl, d.connectionManagerUrl),
+                ).also { Diag.log("ssdp", "Found ${it.name} (${it.details}) at ${reply.location}, server=${reply.server}") }
+            }
+        } catch (e: Exception) {
+            Diag.log("ssdp", "Ignoring ${reply.location}: ${e.message}")
+            null
+        }
     }
 }

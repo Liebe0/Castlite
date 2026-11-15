@@ -1,5 +1,7 @@
 package com.castlite.phone.ui.screens
 
+import com.castlite.phone.ui.RouterScan
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +89,7 @@ data class DevicesActions(
     val saveMac: (CastDevice, String) -> String? = { _, _ -> null },
     val wake: (CastDevice) -> Unit = {},
     val scan: () -> Unit = {},
+    val searchOtherRouters: () -> Unit = {},
 )
 
 @Composable
@@ -113,10 +116,12 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
                 item { ErrorCard("Connect your phone to Wi-Fi to find TVs.", icon = Icons.Filled.WifiOff) }
             }
 
+            val local = state.devices.filterNot { it.otherRouter }
             val groups = listOf(
-                "CastLite TV app" to state.devices.filter { it.protocol == CastProtocol.CASTLITE && !it.isManual },
-                "Smart TVs · DLNA" to state.devices.filter { it.protocol == CastProtocol.DLNA },
-                "Added by IP" to state.devices.filter { it.isManual },
+                "CastLite TV app" to local.filter { it.protocol == CastProtocol.CASTLITE && !it.isManual },
+                "Smart TVs · DLNA" to local.filter { it.protocol == CastProtocol.DLNA && !it.isManual },
+                "Added by IP" to local.filter { it.isManual },
+                "On other routers" to state.devices.filter { it.otherRouter },
             )
             groups.filter { it.second.isNotEmpty() }.forEach { (title, devices) ->
                 item(key = "h-$title") { SectionHeader(title) }
@@ -130,7 +135,7 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
                         onClick = { actions.select(device) },
                         onToggleExtra = { actions.toggleExtra(device) },
                         onPower = { powerFor = device },
-                        onRemove = if (device.isManual) ({ actions.removeManual(device) }) else null,
+                        onRemove = if (device.isManual || device.otherRouter) ({ actions.removeManual(device) }) else null,
                     )
                 }
             }
@@ -146,6 +151,8 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
                 }
             }
             if (state.devices.isEmpty()) item { Tips() }
+
+            if (state.lan.isConnected) item { OtherRoutersCard(state.scan, actions.searchOtherRouters) }
 
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -219,6 +226,37 @@ private fun ScanHeader(state: DevicesUiState) {
     }
 }
 
+/** "TVs on another router?" — searches the networks above the phone's router. */
+@Composable
+private fun OtherRoutersCard(scan: RouterScan, onSearch: () -> Unit) {
+    AppCard(
+        Modifier.fillMaxWidth(),
+        color = Palette.Surface,
+        border = BorderStroke(1.dp, Palette.Outline),
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = PaddingValues(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconDisc(Icons.Filled.Router, Palette.Violet)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("TVs on another router?", style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    scan.message ?: "Several routers in a row? CastLite can look past yours — no need to switch Wi-Fi.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (scan.running) Palette.Cyan else Palette.TextSecondary,
+                )
+            }
+            if (scan.running) {
+                CircularProgressIndicator(Modifier.padding(horizontal = 12.dp).size(22.dp), color = Palette.Cyan, strokeWidth = 2.dp)
+            } else {
+                TextButton(onClick = onSearch) { Text("Search", color = Palette.Cyan) }
+            }
+        }
+    }
+}
+
 @Composable
 private fun DeviceRow(
     device: CastDevice,
@@ -255,6 +293,7 @@ private fun DeviceRow(
                     Text(
                         when {
                             alsoPlaying -> "Also plays here"
+                            device.otherRouter -> device.host
                             else -> device.details
                         },
                         style = MaterialTheme.typography.bodySmall,

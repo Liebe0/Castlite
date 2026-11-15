@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private val vm: ReceiverViewModel by viewModels()
+    private var swallowKeyUp: Int? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +68,15 @@ class MainActivity : ComponentActivity() {
      */
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // The first key in ambient mode only wakes the screen (its release is swallowed too).
+        if (event.action == KeyEvent.ACTION_DOWN && vm.onUserInput()) {
+            swallowKeyUp = event.keyCode
+            return true
+        }
+        if (event.action == KeyEvent.ACTION_UP && event.keyCode == swallowKeyUp) {
+            swallowKeyUp = null
+            return true
+        }
         if (vm.handleKey(event)) return true
         // On the idle screen, OK acts on a pending app update (allow / install / retry).
         if (event.action == KeyEvent.ACTION_DOWN && vm.engine.ui.value.isIdle &&

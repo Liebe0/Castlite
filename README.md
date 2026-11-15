@@ -29,6 +29,7 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 |---|---|
 | **Add media** | System picker (many at once), **a whole folder** (sorted naturally, subtitles paired automatically), **web links** (.mp4/.mp3/.jpg or live **.m3u8**), and **Share → CastLite / Open with CastLite** from any app. The queue is saved and survives restarts. |
 | **Discover** | DLNA renderers via SSDP · CastLite TV apps via mDNS/NSD · **scan the QR code on the TV** · "Enter IP" fallback (remembered). A TV seen both ways (Android TVs often have built-in DLNA) is listed once. |
+| **Other routers** | Several routers in a row (fiber router → router 2 → router 3)? **Search other routers** finds TVs on the networks above the phone's and casts to them without switching Wi-Fi. See [below](#tvs-on-other-routers). |
 | **Control** | Play / pause, seek, previous / next, jump to any item, stop, TV volume, re-send, **repeat (off / all / one)**, **shuffle**. |
 | **Resume** | Long videos/songs remember where you stopped: "Continue watching? Resume at 12:34 / Start over". |
 | **Will it play?** | Each file's codecs are read on the phone and compared with what the TV can decode (CastLite TV app reports its decoders; DLNA TVs list accepted formats) → "May not play: DTS audio" *before* you cast. |
@@ -39,9 +40,10 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 | **Screen mirroring** | Show the whole phone screen (with sound on Android 10+) on the CastLite TV app, low-latency H.264, follows rotation. |
 | **Anywhere controls** | Lock-screen player, notification, **Quick Settings tile**, **home-screen widget**, volume keys → TV volume. |
 | **TV app** | Starts with the TV and listens in the background; **opens itself** when you cast. ExoPlayer video & audio (HLS too), photos, full remote/D-pad support. |
+| **TV waiting screen** | A living background (aurora light, silk ribbons, drifting stars, signal rings around the QR code). After 2 quiet minutes it becomes a big clock that slowly wanders (no burn-in); any key brings the connect screen back. |
 | **Phone locked** | Keeps casting with the screen off and resumes after Wi-Fi drops. See [below](#when-the-phone-is-locked). |
 | **Diagnostics** | *Network & server → Send diagnostics*: one text file with what the phone and TV did, the TV's formats and recent errors. |
-| **Auto-update** | Both apps update themselves from this repo's releases. |
+| **Auto-update** | Both apps update themselves from this repo's releases — the TV even while it shows another app (Android 12+). |
 
 ## Architecture
 
@@ -101,6 +103,7 @@ POST /api/command  ← {"action":"load","items":[{"url":"http://…","title":"�
                      {"action":"repeat","mode":"ALL"} {"action":"subtitles","enabled":false}
 GET  /api/diagnostics → plain-text device info, decoders and the TV app's log
 TCP  :8767            ← screen mirroring stream ("CLMR" header, H.264 + PCM frames; see protocol/Mirror.kt)
+TCP  :8768            ← reverse tunnel for phones behind another router ("CLTN1" header; see protocol/Tunnel.kt)
 ```
 
 `/api/info` also reports the TV's decoders (`capabilities`), which the phone uses for
@@ -187,9 +190,18 @@ git push ─► GitHub Actions: tests ─► build (versionCode = 100 + run) ─
 phone / TV app ─► releases/latest/download/update.json ─► newer? download ─► verify SHA-256 ─► install
 ```
 
-- **When they check:** at start-up, when opened, and every 6 hours while running.
-- **When they install:** the phone only while the app is open and nothing is casting;
-  the TV only on its idle screen — an update never interrupts playback.
+- **When they check:** at start-up, when opened, when Wi-Fi comes back, when a phone
+  connects to the TV, and every 15 minutes of real time while running (a TV waking from
+  standby checks within a minute). A failed check retries after 1, 2, 4, 8… minutes.
+- **When they install:** never while casting, playing or mirroring.
+  - TV: once nothing has played for a minute. On **Android 12+** that includes while the
+    TV shows another app — it updates silently in the background and stays out of the
+    way (it only reopens itself if CastLite was on screen). Older TVs need a press on
+    Android's **Update** dialog, which appears on CastLite's idle screen.
+  - Phone: right away while the app is open, or (Android 12+) silently a few minutes
+    after you leave it.
+- **On the TV, OK** on the idle screen checks for an update right now (the top bar shows
+  "Up to date · checked 14:45").
 - **What you'll see:**
   - *Once per device*, Android asks you to allow CastLite to install apps (phone: tap
     **Allow** on the update card; TV: press **OK** on the idle screen when it says so).
@@ -261,6 +273,32 @@ Wi-Fi" (LG) or "Network standby" (Android TV) option.
 **Quick Settings tile / widget**: pull down Quick Settings → edit (pencil) → drag
 *CastLite* in; long-press the home screen → Widgets → *CastLite*.
 
+## TVs on other routers
+
+Many homes chain routers: **fiber router → router 2 → router 3**, each with its own Wi-Fi.
+Discovery (mDNS, SSDP) uses multicast, which stops at every router, and the TV normally
+*pulls* the video from the phone — which router 3's NAT blocks. CastLite handles this when
+the TV is **upstream** of the phone (the phone on router 3, TVs on routers 2 and 1):
+
+1. **Finding them** — *Choose a TV → TVs on another router? → Search* (also runs once by
+   itself). The phone traces the route out (`ping` with TTL 1, 2, 3 reveals each router),
+   asks its router for its outside address, then asks every address on those networks
+   directly: "CastLite TV?" (port 8766) and "media renderer?" (unicast SSDP). Found TVs are
+   listed under **On other routers** and remembered.
+2. **Casting to a CastLite TV app** — the phone opens the connections itself (reverse
+   tunnel, port 8768): the TV's player reads `http://127.0.0.1:<port>/…`, the TV passes
+   each request through a connection the phone opened, and the phone answers from its media
+   server. Works with any router settings. Needs CastLite TV 1.1.8+.
+3. **Casting to a DLNA TV (LG, Samsung…)** — those can only pull, so the phone asks the
+   routers on the way to forward a port (UPnP): router 3 forwards to the phone, router 2
+   forwards to router 3. **Needs UPnP switched on** in those routers. For safety a port is
+   only opened on routers whose outside address is private — never on the one facing the
+   internet — and it's removed when casting stops.
+
+Not covered: a TV *downstream* of the phone (phone on router 1, TV on router 3). Connect
+the phone to that router's Wi-Fi, or put routers 2/3 in access-point (bridge) mode so the
+whole house is one network.
+
 ## When the phone is locked
 
 Turning the phone's screen off (or locking it) doesn't stop casting:
@@ -309,7 +347,8 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 | `DlnaPrimitivesTest` | SSDP parsing, LG-style device descriptions, SOAP envelopes/faults, DIDL-Lite, time formats, MIME normalization, XXE rejection |
 | `DlnaControllerTest` | `DlnaController` against a fake UPnP renderer: load sequence, polling, seek/volume, auto-advance, interrupted vs. finished, slideshow, 701 retry, 714 errors, "TV never started", lost connection |
 | `KeepAwakePolicyTest`, `PatientLoadErrorPolicyTest` | Wake-lock idle policy, auto-resume after Wi-Fi changes, TV retry/backoff policy |
-| `UpdaterTest` | update.json parsing, version comparison, download through redirects, SHA-256/size verification, reuse |
+| `UpdaterTest`, `UpdatePolicyTest` | update.json parsing, version comparison, download through redirects, SHA-256/size verification, reuse; check timetable (15 min, backoff, standby), when an update may install (casting, on screen, background, declined) |
+| `TunnelTest`, `CrossRouterTest` | Reverse tunnel end to end (whole file, ranges, more requests than idle connections, reconnect); subnet maths, route tracing, URL rewriting, UPnP port mapping through one and two fake routers, never on the internet-facing router |
 | `CompatibilityTest`, `MediaLibraryPersistenceTest` | "May not play" rules, DLNA format lists, Wake-on-LAN packets, resume rules, natural sort, saved queue |
 | `ProtocolV2Test`, `H264Test`, `QueuePlanTest` | New commands/fields and old-app compatibility, mirror stream framing, SPS/PPS splitting, slideshow-music planning |
 | `ProtocolTest`, `ReceiverCastControllerTest` | JSON format; phone client ↔ real TV API server end to end, errors, lost connection |
@@ -320,6 +359,10 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 
 - **No TVs found** — phone and TV must be on the same network, not a guest network
   ("AP / client isolation" blocks devices from seeing each other). On LG, enable *LG Connect Apps*.
+  TV behind another router? Use *Choose a TV → TVs on another router? → Search*
+  ([how it works](#tvs-on-other-routers)).
+- **TV app didn't update** — open CastLite on the TV and press **OK**: it checks right away.
+  If it says *press OK to allow installing*, allow "Install unknown apps" for CastLite once.
 - **LG says "file not supported"** — the phone shows *"didn't start … can't play this format"*.
   LG plays H.264/H.265 MP4 and MKV well; some codecs (e.g. DTS audio, AV1 on older models) aren't supported.
 - **Android TV shows "This TV can't decode this file (video/hevc …)"** — the TV's hardware

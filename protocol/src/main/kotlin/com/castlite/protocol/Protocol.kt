@@ -170,6 +170,8 @@ data class ReceiverInfo(
     val capabilities: Capabilities? = null,
     /** TCP port for screen mirroring, if supported. */
     val mirrorPort: Int? = null,
+    /** TCP port for the reverse tunnel used when the phone is behind another router ([TunnelProtocol]). */
+    val tunnelPort: Int? = null,
 )
 
 @Serializable

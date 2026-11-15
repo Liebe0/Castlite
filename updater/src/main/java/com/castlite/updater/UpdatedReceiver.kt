@@ -17,8 +17,9 @@ import androidx.core.content.ContextCompat
 
 /**
  * Runs in the *new* version right after an update. Android doesn't restart an app that
- * replaced itself, so we try to reopen it (allowed on many TVs) and also post a
- * "CastLite was updated — tap to open" notification (phones).
+ * replaced itself, so if the app was on screen we try to reopen it (allowed on many TVs).
+ * An update that installed in the background leaves the screen alone (e.g. a TV showing
+ * another app). Either way a "CastLite was updated — tap to open" notification is posted.
  */
 class UpdatedReceiver : BroadcastReceiver() {
 
@@ -27,10 +28,16 @@ class UpdatedReceiver : BroadcastReceiver() {
         val pm = context.packageManager
         val launch = (pm.getLeanbackLaunchIntentForPackage(context.packageName) ?: pm.getLaunchIntentForPackage(context.packageName))
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return
-        try {
-            context.startActivity(launch)
-        } catch (e: Exception) {
-            Log.d(TAG, "Not allowed to reopen after update: ${e.message}")
+        val prefs = context.getSharedPreferences(AppUpdater.PREFS, Context.MODE_PRIVATE)
+        // Older versions didn't write this and only installed while on screen.
+        val reopen = prefs.getBoolean(AppUpdater.KEY_REOPEN, true)
+        prefs.edit().remove(AppUpdater.KEY_REOPEN).apply()
+        if (reopen) {
+            try {
+                context.startActivity(launch)
+            } catch (e: Exception) {
+                Log.d(TAG, "Not allowed to reopen after update: ${e.message}")
+            }
         }
         notifyUpdated(context, launch)
     }

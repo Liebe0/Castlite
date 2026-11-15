@@ -26,10 +26,12 @@ object Ssdp {
     const val PORT = 1900
     const val MEDIA_RENDERER = "urn:schemas-upnp-org:device:MediaRenderer:1"
     const val AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
+    /** A router that can open ports on request (UPnP IGD). */
+    const val INTERNET_GATEWAY = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
 
-    fun searchMessage(searchTarget: String, mxSeconds: Int = 2): String =
+    fun searchMessage(searchTarget: String, mxSeconds: Int = 2, host: String = "$ADDRESS:$PORT"): String =
         "M-SEARCH * HTTP/1.1\r\n" +
-            "HOST: $ADDRESS:$PORT\r\n" +
+            "HOST: $host\r\n" +
             "MAN: \"ssdp:discover\"\r\n" +
             "MX: $mxSeconds\r\n" +
             "ST: $searchTarget\r\n" +
@@ -62,7 +64,12 @@ object Ssdp {
      * it keeps the multicast off mobile data) and reports every reply for [timeoutMs].
      * Blocking: call on Dispatchers.IO. The caller must hold a Wi-Fi MulticastLock.
      */
-    fun search(localAddress: InetAddress?, timeoutMs: Int, onResponse: (SsdpResponse) -> Unit) {
+    fun search(
+        localAddress: InetAddress?,
+        timeoutMs: Int,
+        targets: List<String> = listOf(MEDIA_RENDERER, AV_TRANSPORT),
+        onResponse: (SsdpResponse) -> Unit,
+    ) {
         MulticastSocket(null as java.net.SocketAddress?).use { socket ->
             socket.reuseAddress = true
             socket.bind(InetSocketAddress(localAddress, 0))
@@ -74,7 +81,7 @@ object Ssdp {
             val group = InetAddress.getByName(ADDRESS)
             // UDP is lossy: send each query twice.
             repeat(2) {
-                for (target in listOf(MEDIA_RENDERER, AV_TRANSPORT)) {
+                for (target in targets) {
                     val bytes = searchMessage(target).toByteArray()
                     socket.send(DatagramPacket(bytes, bytes.size, group, PORT))
                 }
@@ -92,6 +99,52 @@ object Ssdp {
                 }
                 parse(String(packet.data, 0, packet.length, Charsets.UTF_8))?.let(onResponse)
             }
+        }
+    }
+
+    /**
+     * Asks each of [hosts] directly (unicast M-SEARCH to port 1900). Multicast doesn't pass
+     * through routers, but a unicast question does, and most UPnP devices answer it.
+     * Blocking; sends a few packets per host and listens for [timeoutMs].
+     */
+    fun unicastSearch(
+        localAddress: InetAddress?,
+        hosts: List<String>,
+        searchTarget: String,
+        timeoutMs: Int,
+        onResponse: (from: String, SsdpResponse) -> Unit,
+    ) {
+        java.net.DatagramSocket(null as java.net.SocketAddress?).use { socket ->
+            socket.bind(InetSocketAddress(localAddress, 0))
+            socket.soTimeout = 300
+            val buffer = ByteArray(8 * 1024)
+            fun drain() {
+                while (true) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    try {
+                        socket.receive(packet)
+                    } catch (e: SocketTimeoutException) {
+                        return
+                    } catch (e: IOException) {
+                        return
+                    }
+                    parse(String(packet.data, 0, packet.length, Charsets.UTF_8))?.let { onResponse(packet.address.hostAddress ?: "", it) }
+                }
+            }
+            repeat(2) { round ->
+                for ((i, host) in hosts.withIndex()) {
+                    val bytes = searchMessage(searchTarget, mxSeconds = 1, host = "$host:$PORT").toByteArray()
+                    try {
+                        socket.send(DatagramPacket(bytes, bytes.size, InetAddress.getByName(host), PORT))
+                    } catch (e: IOException) {
+                        // Unreachable host/network: skip it.
+                    }
+                    // Pace the burst a little so cheap routers don't drop it.
+                    if (i % 32 == 31) Thread.sleep(if (round == 0) 15 else 5)
+                }
+            }
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) drain()
         }
     }
 }

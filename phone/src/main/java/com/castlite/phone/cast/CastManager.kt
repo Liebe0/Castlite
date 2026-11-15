@@ -262,6 +262,9 @@ object CastManager {
                 val options = CastOptions(_repeat.value, _slideshow.value)
                 Diag.log("cast", "Cast ${items.size} item(s) from #$index to ${device.name}${if (extras.isEmpty()) "" else " + ${extras.map { it.name }}"}")
 
+                // Each TV gets URLs it can reach (TVs on another router need a tunnel or a router port).
+                val mainEntries = routed(device, entries, ip, port)
+
                 val c = CastControllerFactory.create(device, scope)
                 controller = c
                 var lastIndex = index
@@ -301,13 +304,13 @@ object CastManager {
                 extraControllers.forEach { ec ->
                     launch {
                         try {
-                            ec.load(entries, index, startPositionMs, options)
+                            ec.load(routed(ec.device, entries, ip, port), index, startPositionMs, options)
                         } catch (e: Exception) {
                             emit("${ec.device.name}: ${e.readable()}")
                         }
                     }
                 }
-                loadWithWake(c, entries, index, startPositionMs, options)
+                loadWithWake(c, mainEntries, index, startPositionMs, options)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -319,6 +322,27 @@ object CastManager {
     }
 
     private var endCheckJob: Job? = null
+
+    /** Routes opened for the current session (closed when it ends). */
+    private val routes = java.util.concurrent.CopyOnWriteArrayList<MediaRoute>()
+
+    /** [entries] with URLs [device] can reach; a TV on another router may need a tunnel / port. */
+    private suspend fun routed(device: CastDevice, entries: List<QueueEntry>, ip: String, port: Int): List<QueueEntry> {
+        val route = MediaRoutes.routeFor(device, ip, port)
+        routes += route
+        when (route.kind) {
+            MediaRoute.Kind.TUNNEL, MediaRoute.Kind.PORT_MAPPING -> Diag.log("cast", "${device.name}: on another router, using ${route.kind}")
+            MediaRoute.Kind.DIRECT_ACROSS_ROUTERS -> emit(
+                if (device.protocol == CastProtocol.CASTLITE) {
+                    "${device.name} is on another router. If it doesn't play, update the CastLite TV app."
+                } else {
+                    "${device.name} is on another router. If it doesn't play, turn on UPnP in your routers or join the TV's Wi-Fi."
+                },
+            )
+            MediaRoute.Kind.DIRECT -> Unit
+        }
+        return entries.map { e -> e.copy(url = route.map(e.url), subtitleUrl = e.subtitleUrl?.let(route::map)) }
+    }
 
     /** A finished session gets no more status changes, so re-check it after the grace period. */
     private fun scheduleEndCheck(c: CastController, policy: SessionEndPolicy) {
@@ -412,6 +436,8 @@ object CastManager {
         controller = null
         extraControllers.forEach { it.release() }
         extraControllers = emptyList()
+        routes.forEach { it.release() }
+        routes.clear()
     }
 
     /** Runs [block] on the main TV (and, with [allTvs], on the extra ones too). */

@@ -154,8 +154,10 @@ class PhoneScreensTest {
                     lg,
                     CastDevice("uuid:sam", "Samsung Q60 Series (55)", CastProtocol.DLNA, "192.168.1.51", "Samsung Electronics", "QE55Q60"),
                     CastDevice("castlite:192.168.1.70", "Bedroom TV", CastProtocol.CASTLITE, "192.168.1.70", "CastLite TV app", "Chromecast HD", isManual = true),
+                    CastDevice("castlite:192.168.0.40", "Kitchen TV", CastProtocol.CASTLITE, "192.168.0.40", "CastLite TV app", otherRouter = true),
                 ),
                 selectedId = lg.id, lan = lan, extraIds = setOf(shield.id),
+                scan = com.castlite.phone.ui.RouterScan(message = "Found 1 TV on another router."),
             ),
             DevicesActions(),
         )

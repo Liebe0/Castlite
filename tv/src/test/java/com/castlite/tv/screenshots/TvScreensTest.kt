@@ -53,10 +53,16 @@ class TvScreensTest {
         ),
     )
 
-    @Test fun idle() = shot { IdleScreen(info, lastMessage = null) }
+    @Test fun idle() = shot {
+        IdleScreen(info, lastMessage = null, update = com.castlite.updater.UpdateState.UpToDate(1_763_217_900_000L), version = "1.1.8")
+    }
 
     @Test fun idle_update_ready() = shot {
         IdleScreen(info, lastMessage = null, update = com.castlite.updater.UpdateState.ReadyToInstall("1.1.12"), version = "1.1.11")
+    }
+
+    @Test fun idle_ambient() = shot {
+        IdleScreen(info, lastMessage = null, update = com.castlite.updater.UpdateState.UpToDate(1_763_217_900_000L), version = "1.1.8", ambient = true)
     }
 
     @Test fun idle_after_session() = shot { IdleScreen(info, lastMessage = "Finished playing") }

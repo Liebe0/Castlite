@@ -9,6 +9,8 @@ import com.castlite.phone.cast.DeviceRepository
 import com.castlite.phone.cast.receiver.ReceiverDiscovery
 import com.castlite.phone.net.LanMonitor
 import com.castlite.phone.net.LanStatus
+import com.castlite.phone.net.NetworkScanner
+import com.castlite.phone.net.Subnets
 import com.castlite.phone.net.WakeOnLan
 import com.castlite.protocol.ReceiverProtocol
 import com.castlite.protocol.TvQrCode
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** State of the "Enter TV IP" dialog. */
@@ -35,23 +38,76 @@ data class DevicesUiState(
     val extraIds: Set<String> = emptySet(),
     /** Device id → MAC for "Turn on TV". */
     val macs: Map<String, String> = emptyMap(),
+    val scan: RouterScan = RouterScan(),
 )
+
+/** Progress of "Search other routers". */
+data class RouterScan(val running: Boolean = false, val message: String? = null)
 
 /** Runs discovery while the device picker is on screen. */
 class DevicesViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = DeviceRepository(app)
     private val manual = MutableStateFlow<ManualEntry>(ManualEntry.Hidden)
+    private val scan = MutableStateFlow(RouterScan())
 
     val state: StateFlow<DevicesUiState> = combine(
         repository.devices(),
         CastManager.selectedDevice,
         LanMonitor(app).status,
-        manual,
+        combine(manual, scan) { entry, scan -> entry to scan },
         combine(CastManager.extraDevices, CastManager.macs) { extras, macs -> extras.map { it.id }.toSet() to macs },
-    ) { devices, selected, lan, entry, (extras, macs) ->
-        DevicesUiState(devices, selected?.id, lan, entry, extras, macs)
+    ) { devices, selected, lan, (entry, scan), (extras, macs) ->
+        DevicesUiState(devices, selected?.id, lan, entry, extras, macs, scan)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(3_000), DevicesUiState())
+
+    init {
+        // Once per network per app run, look past the phone's router automatically.
+        viewModelScope.launch {
+            val ip = LanMonitor(app).current().ipAddress ?: return@launch
+            val network = Subnets.slash24(ip) ?: return@launch
+            if (autoSearched.add(network)) {
+                delay(1_500) // let normal discovery go first
+                searchOtherRouters()
+            }
+        }
+    }
+
+    /**
+     * Finds TVs on routers chained above (or beside) the phone's and remembers them, so
+     * they show up in the list from now on.
+     */
+    fun searchOtherRouters() {
+        if (scan.value.running) return
+        viewModelScope.launch {
+            scan.value = RouterScan(running = true, message = "Looking for other routers…")
+            val result = try {
+                NetworkScanner(getApplication()).scan { msg -> scan.value = RouterScan(running = true, message = msg) }
+            } catch (e: Exception) {
+                scan.value = RouterScan(message = "Search failed: ${e.message}")
+                return@launch
+            }
+            val liveIds = state.value.devices.map { it.id }.toSet()
+            for (d in result.devices) {
+                when {
+                    d.otherRouter -> repository.addManual(d)
+                    // Same network but invisible to discovery (routers that block multicast).
+                    d.id !in liveIds -> repository.addManual(d.copy(isManual = true))
+                }
+            }
+            val others = result.devices.count { it.otherRouter }
+            val routers = result.networks.size - 1
+            scan.value = RouterScan(
+                message = when {
+                    result.networks.isEmpty() -> "Connect to Wi-Fi first."
+                    others == 1 -> "Found 1 TV on another router."
+                    others > 1 -> "Found $others TVs on other routers."
+                    routers > 0 -> "No TVs found on the other ${if (routers == 1) "router" else "$routers routers"} (${result.networks.drop(1).joinToString { "$it.x" }}). Make sure they're on."
+                    else -> "No other routers found above this one."
+                },
+            )
+        }
+    }
 
     /** Also play on [device] (party mode), or stop doing so. */
     fun toggleExtra(device: CastDevice) = CastManager.toggleExtraDevice(device)
@@ -104,7 +160,12 @@ class DevicesViewModel(app: Application) : AndroidViewModel(app) {
         manual.value = ManualEntry.Checking
         viewModelScope.launch {
             try {
-                val device = ReceiverDiscovery.probe(host, port)
+                val probed = ReceiverDiscovery.probe(host, port)
+                val phoneIp = LanMonitor(getApplication()).current().ipAddress
+                val device = probed.copy(
+                    otherRouter = phoneIp != null && Subnets.toInt(host) != null &&
+                        !Subnets.sameSubnet(host, phoneIp, Subnets.prefixLengthOf(phoneIp)),
+                )
                 repository.addManual(device)
                 CastManager.select(device)
                 manual.value = ManualEntry.Hidden
@@ -120,6 +181,9 @@ class DevicesViewModel(app: Application) : AndroidViewModel(app) {
     fun removeManual(device: CastDevice) = repository.removeManual(device)
 
     companion object {
+        /** Networks already searched automatically in this app run. */
+        private val autoSearched = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
         private val IPV4 = Regex("""^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$""")
         private val HOSTNAME = Regex("""^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9-]{1,63})*$""")
 

@@ -11,27 +11,34 @@ import coil3.request.crossfade
 import coil3.video.VideoFrameDecoder
 import com.castlite.phone.cast.CastManager
 import com.castlite.phone.media.MediaLibrary
+import com.castlite.phone.mirror.MirrorManager
+import com.castlite.phone.mirror.MirrorUiState
 import com.castlite.updater.AppTarget
 import com.castlite.updater.AppUpdater
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class CastLiteApp : Application(), SingletonImageLoader.Factory {
 
-    /** Self-updater (GitHub releases). Installs only while the app is open and nothing is casting. */
+    /**
+     * Self-updater (GitHub releases). Installs only while nothing is casting or mirroring:
+     * right away while the app is open, or (Android 12+, silently) a few minutes after
+     * it was left.
+     */
     val updater: AppUpdater by lazy {
         AppUpdater(this, BuildConfig.UPDATE_MANIFEST_URL, AppTarget.PHONE).apply {
-            canInstallNow = { isUiVisible && CastManager.session.value == null }
+            canInstallNow = { CastManager.session.value == null && MirrorManager.state.value is MirrorUiState.Idle }
         }
     }
 
     /** True while an activity of ours is on screen (set by MainActivity). */
     @Volatile var isUiVisible = false
         set(value) {
+            val changed = field != value
             field = value
-            if (value) updater.onForeground()
+            if (value) updater.onForeground() else if (changed) updater.onBackground()
         }
 
     override fun onCreate() {
@@ -40,9 +47,11 @@ class CastLiteApp : Application(), SingletonImageLoader.Factory {
         MediaLibrary.init(java.io.File(filesDir, "queue.json")) // the queue survives restarts
         CastManager.init(this)
         updater.startAutoChecks()
-        // A ready update waits until casting stops.
+        // A ready update waits until casting and mirroring stop.
         MainScope().launch {
-            CastManager.session.map { it == null }.distinctUntilChanged().collect { idle -> if (idle) updater.installIfReady() }
+            combine(CastManager.session, MirrorManager.state) { session, mirror -> session == null && mirror is MirrorUiState.Idle }
+                .distinctUntilChanged()
+                .collect { idle -> if (idle) updater.installIfReady() }
         }
     }
 

@@ -10,7 +10,7 @@ import android.util.Log
 /**
  * Gets PackageInstaller's verdict. If Android needs the user to confirm, it hands us
  * its "Update this app?" screen to show; otherwise it reports success or failure.
- * (On success the app is replaced and restarted by the system — just reopen it.)
+ * (On success the app is replaced and restarted by the system.)
  */
 class InstallResultReceiver : BroadcastReceiver() {
 
@@ -18,6 +18,7 @@ class InstallResultReceiver : BroadcastReceiver() {
         if (intent.action != ACTION) return
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val version = intent.getLongExtra(EXTRA_VERSION, -1)
+        val updater = AppUpdater.instance
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             val confirm: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
@@ -25,19 +26,18 @@ class InstallResultReceiver : BroadcastReceiver() {
                 @Suppress("DEPRECATION")
                 intent.getParcelableExtra(Intent.EXTRA_INTENT)
             }
-            if (confirm != null) {
-                try {
-                    context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                } catch (e: Exception) {
-                    Log.w(TAG, "Couldn't show the install dialog", e)
-                    AppUpdater.instance?.onInstallFinished(PackageInstaller.STATUS_FAILURE, "Couldn't show the install dialog", version)
-                }
+            val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+            Log.i(TAG, "Android asks the user to confirm the update")
+            when {
+                confirm == null -> updater?.onInstallFinished(PackageInstaller.STATUS_FAILURE, "Android didn't show the install dialog", version)
+                updater != null -> updater.onUserActionRequired(confirm, sessionId)
+                else -> runCatching { context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
             return
         }
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
         Log.i(TAG, "Install finished: status=$status $message")
-        AppUpdater.instance?.onInstallFinished(status, message, version)
+        updater?.onInstallFinished(status, message, version)
     }
 
     companion object {

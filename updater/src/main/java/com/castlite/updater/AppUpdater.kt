@@ -5,11 +5,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.pm.PackageInfoCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,6 +25,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** What the updater is doing; shown as a small banner/pill in each app. */
 sealed interface UpdateState {
@@ -40,12 +46,16 @@ sealed interface UpdateState {
 /**
  * Keeps the app up to date from GitHub releases:
  *
- * 1. Fetches `update.json` from the latest release (on start and every few hours).
+ * 1. Fetches `update.json` from the latest release: at start-up, every 15 minutes, and
+ *    whenever something suggests it ([onForeground], Wi-Fi coming back, [nudge]).
  * 2. If it's newer than the installed version, downloads this app's APK and verifies
  *    its SHA-256.
- * 3. Installs it with [PackageInstaller] as soon as [canInstallNow] allows (the apps
- *    say "not while casting / playing"). On Android 12+ an app may update itself
- *    without a prompt; otherwise Android shows its one-tap "Update" dialog.
+ * 3. Installs it with [PackageInstaller] as soon as [canInstallNow] allows (the apps say
+ *    "not while casting / playing"):
+ *    - On Android 12+ an app may update itself without a prompt, so this also happens
+ *      in the background (e.g. while the TV shows another app).
+ *    - Otherwise Android shows its one-tap "Update" dialog, so it waits until the app is
+ *      on screen.
  *
  * Updates install over the old version because every build is signed with the same key.
  */
@@ -57,6 +67,8 @@ class AppUpdater(
 ) {
     private val app = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val schedule = CheckSchedule()
 
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -70,28 +82,52 @@ class AppUpdater(
     private var pending: Pair<UpdateManifest, File>? = null
     private var checkJob: Job? = null
     private var periodicJob: Job? = null
-    private var lastCheckMs = 0L
     /** The user cancelled the system install dialog for this version: don't nag until they ask. */
     private var declinedVersion: Long = -1
+    /** When the current install was handed to Android (0 = none in progress). */
+    private var installStartedMs = 0L
+    @Volatile private var visible = false
+    private var hiddenAtMs = 0L
+    private var lastError: String? = null
 
     init {
         instance = this
     }
 
-    /** Checks now, then every [intervalMs] while the process lives. */
-    fun startAutoChecks(intervalMs: Long = 6 * 60 * 60_000L) {
+    /** Checks now, then on [CheckSchedule]'s timetable while the process lives. */
+    fun startAutoChecks() {
         if (periodicJob?.isActive == true) return
         periodicJob = scope.launch {
             while (isActive) {
-                check()
-                delay(intervalMs)
+                if (schedule.isDue(now())) check()
+                delay(TICK_MS)
             }
+        }
+        watchNetwork()
+    }
+
+    /** The app came on screen: check (unless it just did) and install a ready update. */
+    fun onForeground() {
+        visible = true
+        if (schedule.nudgeAllowed(now())) check() else installIfReady()
+    }
+
+    /** The app left the screen. If it stays idle, a silent update may install a bit later. */
+    fun onBackground() {
+        visible = false
+        hiddenAtMs = now()
+        scope.launch {
+            delay(InstallGate.BACKGROUND_DELAY_MS + 1_000)
+            installIfReady()
         }
     }
 
-    /** Call when the app comes to the foreground: re-checks (rate-limited) and installs a ready update. */
-    fun onForeground() {
-        if (System.currentTimeMillis() - lastCheckMs > MIN_RECHECK_MS) check() else installIfReady()
+    /**
+     * Something makes a check worthwhile (a phone connected, Wi-Fi came back). Rate-limited;
+     * safe to call from any thread.
+     */
+    fun nudge() {
+        scope.launch { if (schedule.nudgeAllowed(now())) check() }
     }
 
     /** Fetches the manifest and, if there's a newer version, downloads it. */
@@ -99,36 +135,55 @@ class AppUpdater(
         if (checkJob?.isActive == true) return
         if (userInitiated) declinedVersion = -1
         checkJob = scope.launch {
-            val ready = pending
-            if (ready != null) {
-                installIfReady()
-                return@launch
-            }
-            lastCheckMs = System.currentTimeMillis()
-            _state.value = UpdateState.Checking
+            schedule.onAttempt(now())
+            // Background checks are quiet: the screen keeps showing e.g. "update ready".
+            if (userInitiated) _state.value = UpdateState.Checking
             try {
                 val manifest = withContext(Dispatchers.IO) { downloader.fetchManifest(manifestUrl) }
+                schedule.onSuccess(now())
+                lastError = null
                 val asset = manifest.assetFor(target)
                 if (!manifest.isUpdateFor(target, installedVersionCode) || asset == null) {
-                    _state.value = UpdateState.UpToDate(System.currentTimeMillis())
+                    pending = null
+                    _state.value = UpdateState.UpToDate(now())
                     cleanup(keep = null)
                     return@launch
                 }
-                val file = File(updateDir(), "castlite-${target.name.lowercase()}-${manifest.versionCode}.apk")
-                cleanup(keep = file)
-                _state.value = UpdateState.Downloading(manifest.versionName, 0f)
-                withContext(Dispatchers.IO) {
-                    downloader.download(asset, file) { p ->
-                        _state.value = UpdateState.Downloading(manifest.versionName, p)
+                val held = pending
+                if (held == null || held.first.versionCode != manifest.versionCode || !held.second.exists()) {
+                    // New version (or a newer one than the download we were holding).
+                    val file = File(updateDir(), "castlite-${target.name.lowercase()}-${manifest.versionCode}.apk")
+                    pending = null
+                    cleanup(keep = file)
+                    _state.value = UpdateState.Downloading(manifest.versionName, 0f)
+                    withContext(Dispatchers.IO) {
+                        downloader.download(asset, file) { p ->
+                            _state.value = UpdateState.Downloading(manifest.versionName, p)
+                        }
                     }
+                    Log.i(TAG, "Update ${manifest.versionName} downloaded")
+                    pending = manifest to file
                 }
-                Log.i(TAG, "Update ${manifest.versionName} downloaded")
-                pending = manifest to file
-                _state.value = UpdateState.ReadyToInstall(manifest.versionName)
+                if (!installInProgress()) _state.value = UpdateState.ReadyToInstall(manifest.versionName)
                 installIfReady()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Update check failed", e)
-                _state.value = UpdateState.Failed(e.message ?: "Update check failed")
+                schedule.onFailure()
+                lastError = e.message ?: e.javaClass.simpleName
+                val ready = pending
+                when {
+                    // Keep offering the update we already have; it doesn't need the network.
+                    ready != null -> {
+                        if (!installInProgress()) _state.value = UpdateState.ReadyToInstall(ready.first.versionName)
+                        installIfReady()
+                    }
+                    // A single failed background check (e.g. Wi-Fi still connecting) isn't worth
+                    // showing: it retries within a minute.
+                    userInitiated || schedule.failures >= 3 ->
+                        _state.value = UpdateState.Failed(e.message ?: "Update check failed")
+                }
             }
         }
     }
@@ -136,17 +191,31 @@ class AppUpdater(
     /** Installs the downloaded update if the app says it's a good moment. */
     fun installIfReady(userInitiated: Boolean = false) {
         val (manifest, file) = pending ?: return
-        if (!userInitiated && (manifest.versionCode == declinedVersion || !canInstallNow())) return
+        if (installInProgress()) return
+        val allowed = InstallGate.allowed(
+            userInitiated = userInitiated,
+            appIdle = canInstallNow(),
+            declined = manifest.versionCode == declinedVersion,
+            visible = visible,
+            silentPossible = silentInstallPossible(),
+            msSinceHidden = now() - hiddenAtMs,
+        )
+        if (!allowed) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !app.packageManager.canRequestPackageInstalls()) {
             _state.value = UpdateState.NeedsPermission(manifest.versionName)
             return
         }
         _state.value = UpdateState.Installing(manifest.versionName)
+        installStartedMs = now()
+        // Read by the new version (UpdatedReceiver): reopen the app only if it was on screen.
+        prefs.edit().putBoolean(KEY_REOPEN, visible).commit()
+        Log.i(TAG, "Installing ${manifest.versionName} (on screen: $visible)")
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { commit(file, manifest.versionCode) }
             } catch (e: Exception) {
                 Log.w(TAG, "Install failed", e)
+                installStartedMs = 0
                 _state.value = UpdateState.Failed("Couldn't install the update: ${e.message}")
             }
         }
@@ -159,6 +228,16 @@ class AppUpdater(
         } else {
             Intent(Settings.ACTION_SECURITY_SETTINGS)
         }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** One line for diagnostics reports. */
+    fun describe(): String {
+        val fmt = SimpleDateFormat("HH:mm", Locale.US)
+        val lastOk = schedule.lastSuccessMs.takeIf { it > 0 }?.let { fmt.format(Date(it)) } ?: "never"
+        val allowedToInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || app.packageManager.canRequestPackageInstalls()
+        return "Updater: ${state.value}; last good check $lastOk, failed checks ${schedule.failures}" +
+            (lastError?.let { " (last error: $it)" } ?: "") +
+            "; may install apps: $allowedToInstall; silent install: ${silentInstallPossible()}; on screen: $visible"
+    }
 
     /** Hands the APK to PackageInstaller. The result arrives in [InstallResultReceiver]. */
     @SuppressLint("RequestInstallPackagesPolicy")
@@ -191,10 +270,38 @@ class AppUpdater(
         }
     }
 
+    /**
+     * Android wants the user to confirm (always before Android 12). Shows its dialog if
+     * the app is on screen; otherwise drops this attempt and asks next time it's opened.
+     * Returns false if the dialog couldn't be shown.
+     */
+    internal fun onUserActionRequired(confirm: Intent, sessionId: Int): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ asked anyway (e.g. another store owns updates): stop trying silently.
+            prefs.edit().putLong(KEY_SILENT_REFUSED, installedVersionCode).apply()
+        }
+        val name = pending?.first?.versionName ?: "update"
+        if (visible) {
+            try {
+                app.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                // If the dialog is closed without an answer, "press OK" can bring it back.
+                _state.value = UpdateState.ReadyToInstall(name)
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't show the install dialog", e)
+            }
+        }
+        if (sessionId > 0) runCatching { app.packageManager.packageInstaller.abandonSession(sessionId) }
+        installStartedMs = 0
+        _state.value = UpdateState.ReadyToInstall(name)
+        return false
+    }
+
     internal fun onInstallFinished(status: Int, message: String?, versionCode: Long) {
+        installStartedMs = 0
         val name = pending?.first?.versionName ?: "update"
         _state.value = when (status) {
-            PackageInstaller.STATUS_SUCCESS -> UpdateState.UpToDate(System.currentTimeMillis())
+            PackageInstaller.STATUS_SUCCESS -> UpdateState.UpToDate(now())
             PackageInstaller.STATUS_FAILURE_ABORTED -> {
                 // User pressed Cancel: keep the download, don't ask again until next time.
                 declinedVersion = versionCode
@@ -203,6 +310,26 @@ class AppUpdater(
             else -> UpdateState.Failed(message ?: "Installation failed ($status)")
         }
     }
+
+    /** A dialog may still be open for a while; after that, assume it was dismissed. */
+    private fun installInProgress(): Boolean = installStartedMs > 0 && now() - installStartedMs < INSTALL_TIMEOUT_MS
+
+    private fun silentInstallPossible(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && prefs.getLong(KEY_SILENT_REFUSED, -1) != installedVersionCode
+
+    /** Wi-Fi came (back): a good moment to check, e.g. right after the TV boots. */
+    private fun watchNetwork() {
+        val cm = app.getSystemService(ConnectivityManager::class.java) ?: return
+        try {
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = nudge()
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Can't watch the network", e)
+        }
+    }
+
+    private fun now() = System.currentTimeMillis()
 
     private fun updateDir() = File(app.cacheDir, "updates").apply { mkdirs() }
 
@@ -215,7 +342,12 @@ class AppUpdater(
 
     companion object {
         private const val TAG = "AppUpdater"
-        private const val MIN_RECHECK_MS = 30 * 60_000L
+        private const val TICK_MS = 60_000L
+        private const val INSTALL_TIMEOUT_MS = 10 * 60_000L
+        internal const val PREFS = "castlite_updater"
+        /** Written before installing: was the app on screen (so the new version reopens it)? */
+        internal const val KEY_REOPEN = "reopen_after_update"
+        private const val KEY_SILENT_REFUSED = "silent_refused_at_version"
 
         /** The live updater, so [InstallResultReceiver] can report back. */
         @Volatile internal var instance: AppUpdater? = null

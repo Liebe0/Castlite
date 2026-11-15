@@ -48,6 +48,7 @@ object DiagnosticsReport {
         appendLine("Server: ${s.server}")
         appendLine("Background: ${s.power}")
         appendLine("Update: ${s.update}")
+        (context.applicationContext as? com.castlite.phone.CastLiteApp)?.let { appendLine(it.updater.describe()) }
         appendLine("Mirror: ${s.mirror}")
         appendLine("Selected TV: ${s.selectedDevice}")
         appendLine("Other TVs: ${s.extraDevices.map { it.name }}")

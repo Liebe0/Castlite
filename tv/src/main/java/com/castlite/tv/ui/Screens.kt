@@ -1,5 +1,6 @@
 package com.castlite.tv.ui
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
@@ -93,10 +94,30 @@ private val SafeV = 32.dp
 // Idle: "Ready to cast"
 // =====================================================================================
 
+/**
+ * Waiting for a phone: a living animated background with the connect card. After a few
+ * quiet minutes ([ambient]) it turns into a big wandering clock (see IdleScene.kt).
+ */
 @Composable
-fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateState = UpdateState.Idle, version: String = "") {
+fun IdleScreen(
+    info: ReceiverInfoState,
+    lastMessage: String?,
+    update: UpdateState = UpdateState.Idle,
+    version: String = "",
+    ambient: Boolean = false,
+) {
+    val time = rememberSceneTime()
     Box(Modifier.fillMaxSize()) {
-        AmbientBackground()
+        LivingBackground(time)
+        Crossfade(targetState = ambient, animationSpec = tween(1_200), label = "ambient") { isAmbient ->
+            if (isAmbient) AmbientScene(info, update, time) else ConnectLayout(info, lastMessage, update, version, time)
+        }
+    }
+}
+
+@Composable
+private fun ConnectLayout(info: ReceiverInfoState, lastMessage: String?, update: UpdateState, version: String, time: androidx.compose.runtime.State<Float>) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = SafeH, vertical = SafeV)) {
             // Top bar: logo + clock.
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -138,7 +159,10 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateStat
                     }
                 }
                 Spacer(Modifier.width(40.dp))
-                AddressCard(info, Modifier.weight(1f))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    CastWaves(time, Modifier.matchParentSize())
+                    AddressCard(info, Modifier.fillMaxWidth())
+                }
             }
 
             Spacer(Modifier.weight(1f))
@@ -152,18 +176,28 @@ fun IdleScreen(info: ReceiverInfoState, lastMessage: String?, update: UpdateStat
     }
 }
 
-/** Small status chip for the self-updater; OK on the remote acts on it. */
+/** Small status chip for the self-updater; OK on the remote acts on it (or checks now). */
 @Composable
-private fun UpdatePill(update: UpdateState) {
+internal fun UpdatePill(update: UpdateState) {
     val (text, highlight) = when (update) {
+        UpdateState.Checking -> "Checking for updates…" to false
+        is UpdateState.UpToDate -> {
+            val time = remember(update.checkedAtMs) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(update.checkedAtMs)) }
+            "Up to date · checked $time" to null
+        }
         is UpdateState.Downloading -> "Downloading update ${(update.progress * 100).toInt()}%" to false
         is UpdateState.ReadyToInstall -> "Update ${update.version} ready · press OK" to true
         is UpdateState.NeedsPermission -> "Update ready · press OK to allow installing" to true
         is UpdateState.Installing -> "Installing update…" to false
         is UpdateState.Failed -> "Update check failed · press OK to retry" to false
-        else -> return
+        UpdateState.Idle -> return
     }
-    val color = if (highlight) TvPalette.Cyan else TvPalette.TextSecondary
+    // null = quiet (up to date), false = in progress, true = needs the user.
+    val color = when (highlight) {
+        true -> TvPalette.Cyan
+        false -> TvPalette.TextSecondary
+        null -> TvPalette.TextTertiary
+    }
     Row(
         Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.12f))
             .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(50))
