@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // Renders Compose screens to PNGs on the JVM (screenshot tests, no emulator needed).
+    alias(libs.plugins.paparazzi)
 }
 
 android {
@@ -14,8 +16,8 @@ android {
         applicationId = "com.castlite.tv"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
     }
 
     signingConfigs {
@@ -70,8 +72,18 @@ dependencies {
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.tv.material)
+    implementation(libs.compose.material.icons)
+
+    // Phone <-> TV protocol: JSON models + the HTTP API server.
+    implementation(project(":protocol"))
+    // Video and audio playback.
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+    // Photos (with EXIF rotation, crossfade and caching).
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network)
+
+    testImplementation(libs.junit)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
-
-
 }

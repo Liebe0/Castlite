@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // Renders Compose screens to PNGs on the JVM (screenshot tests, no emulator needed).
+    alias(libs.plugins.paparazzi)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -14,8 +17,8 @@ android {
         applicationId = "com.castlite.phone"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
     }
 
     signingConfigs {
@@ -80,6 +83,11 @@ dependencies {
 
     // Tiny embedded HTTP server that streams the picked files to the TV.
     implementation(libs.nanohttpd)
+    // Phone <-> CastLite TV app protocol (shared with the tv module).
+    implementation(project(":protocol"))
+    // Thumbnails for the queue (photos and video frames).
+    implementation(libs.coil.compose)
+    implementation(libs.coil.video)
 
     testImplementation(libs.junit)
 }

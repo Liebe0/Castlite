@@ -3,6 +3,7 @@ package com.castlite.phone.media
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
@@ -11,6 +12,7 @@ import android.webkit.MimeTypeMap
 /** Reads name, size and MIME type of content:// URIs coming from the system picker. */
 class MediaResolver(context: Context) {
 
+    private val context = context.applicationContext
     private val resolver: ContentResolver = context.applicationContext.contentResolver
 
     /**
@@ -47,10 +49,14 @@ class MediaResolver(context: Context) {
         if (size < 0) size = sizeFromDescriptor(uri)
 
         val displayName = name ?: uri.lastPathSegment ?: "media"
-        val mime = resolver.getType(uri)
-            ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(displayName.substringAfterLast('.', "").lowercase())
-            ?: "application/octet-stream"
+        val mime = MimeTypes.normalize(resolver.getType(uri), displayName)
         val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+        val kind = MediaKind.fromMime(mime)
+        if (kind == MediaKind.OTHER) {
+            Log.w(TAG, "Unsupported type $mime for $displayName")
+            return null
+        }
+        val duration = if (kind == MediaKind.VIDEO || kind == MediaKind.AUDIO) durationOf(uri) else 0L
 
         return CastMedia(
             id = MediaLibrary.newId(),
@@ -59,7 +65,21 @@ class MediaResolver(context: Context) {
             fileName = FileNames.sanitize(displayName, ext),
             mimeType = mime,
             sizeBytes = size,
+            durationMs = duration,
         )
+    }
+
+    /** Reads the play length from the file's metadata (shown in the queue and sent to TVs). */
+    private fun durationOf(uri: Uri): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } catch (e: Exception) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     private fun sizeFromDescriptor(uri: Uri): Long = try {

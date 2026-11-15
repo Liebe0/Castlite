@@ -1,7 +1,8 @@
 name: Build APKs
 
-# Builds debug APKs for the phone and TV apps on every push / PR and uploads them
-# as downloadable artifacts (Actions tab → a run → "Artifacts").
+# On every push / PR: run all tests, render UI screenshots, build debug APKs for the
+# phone and TV apps, and upload everything as downloadable artifacts
+# (Actions tab → a run → "Artifacts").
 on:
   push:
   pull_request:
@@ -28,8 +29,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Unit tests
-        run: ./gradlew --stacktrace testDebugUnitTest
+      # Runs every unit/integration test and records the Paparazzi screenshots.
+      - name: Tests + screenshots
+        run: ./gradlew --stacktrace :protocol:test :phone:recordPaparazziDebug :tv:recordPaparazziDebug
 
       - name: Build debug APKs
         run: ./gradlew --stacktrace :phone:assembleDebug :tv:assembleDebug
@@ -53,6 +55,14 @@ jobs:
           name: CastLite-tv-debug
           path: out/CastLite-tv-debug.apk
           if-no-files-found: error
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: CastLite-screenshots
+          path: |
+            phone/src/test/snapshots/images/
+            tv/src/test/snapshots/images/
 
       - name: Upload test reports
         if: failure()

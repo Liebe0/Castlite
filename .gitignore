@@ -8,3 +8,5 @@ build/
 .externalNativeBuild
 .cxx
 .kotlin/
+# Paparazzi output (regenerate with ./gradlew recordPaparazziDebug; curated copies live in docs/screenshots)
+**/src/test/snapshots/

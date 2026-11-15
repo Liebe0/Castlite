@@ -20,3 +20,5 @@ rootProject.name = "CastLite"
 include(":phone")
 // Receiver app that runs on Android TV.
 include(":tv")
+// Shared phone <-> TV receiver protocol (pure Kotlin, no Android).
+include(":protocol")

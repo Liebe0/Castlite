@@ -31,6 +31,13 @@ object MediaLibrary {
 
     fun clear() = _items.update { emptyList() }
 
+    /** Moves an item up (delta < 0) or down (delta > 0) in the queue. */
+    fun move(id: String, delta: Int) = _items.update { list ->
+        val from = list.indexOfFirst { it.id == id }
+        val to = (from + delta).coerceIn(0, list.lastIndex)
+        if (from < 0 || from == to) list else list.toMutableList().apply { add(to, removeAt(from)) }
+    }
+
     /** Looked up from the server's worker threads; StateFlow.value is thread-safe. */
     fun find(id: String): CastMedia? = _items.value.firstOrNull { it.id == id }
 

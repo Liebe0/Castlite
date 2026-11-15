@@ -10,7 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import com.castlite.phone.ui.HomeScreen
+import com.castlite.phone.ui.CastLiteRoot
 import com.castlite.phone.ui.theme.CastLiteTheme
 
 class MainActivity : ComponentActivity() {
@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
         askForNotificationPermission()
         setContent {
             CastLiteTheme {
-                HomeScreen()
+                CastLiteRoot()
             }
         }
     }

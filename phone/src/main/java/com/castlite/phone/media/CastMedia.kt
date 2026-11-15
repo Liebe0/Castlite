@@ -34,6 +34,8 @@ data class CastMedia(
     val fileName: String,
     val mimeType: String,
     val sizeBytes: Long,
+    /** Playback length for video/audio (0 if unknown or a photo). */
+    val durationMs: Long = 0,
 ) {
     val uri: Uri get() = Uri.parse(contentUri)
 
