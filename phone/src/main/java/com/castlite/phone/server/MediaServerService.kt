@@ -22,6 +22,8 @@ import com.castlite.phone.cast.CastManager
 import com.castlite.phone.cast.CastMediaSession
 import com.castlite.phone.cast.CastSession
 import com.castlite.phone.cast.PlayerState
+import com.castlite.phone.controls.CastTileService
+import com.castlite.phone.controls.CastWidget
 import com.castlite.phone.media.MediaLibrary
 import com.castlite.phone.net.LanMonitor
 import com.castlite.phone.net.LanStatus
@@ -106,7 +108,9 @@ class MediaServerService : Service() {
         var lastError: IOException? = null
         repeat(MediaHttpServer.PORT_ATTEMPTS) { attempt ->
             val port = MediaHttpServer.PREFERRED_PORT + attempt
-            val candidate = MediaHttpServer(ContentMediaOpener(contentResolver), port)
+            val candidate = MediaHttpServer(ContentMediaOpener(contentResolver), port) { uri ->
+                runCatching { contentResolver.openInputStream(android.net.Uri.parse(uri)) }.getOrNull()
+            }
             try {
                 candidate.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 Log.i(TAG, "Media server listening on port $port")
@@ -131,6 +135,8 @@ class MediaServerService : Service() {
             }.collect { (lan, count, session) ->
                 mediaSession.update(session)
                 notify(buildNotification(lan, count, port, session))
+                CastWidget.update(this@MediaServerService, session)
+                CastTileService.refresh(this@MediaServerService)
             }
         }
 
@@ -233,10 +239,17 @@ class MediaServerService : Service() {
     companion object {
         private const val TAG = "MediaServerService"
         private const val NOTIFICATION_ID = 1
-        private const val ACTION_STOP = "com.castlite.phone.action.STOP_SERVER"
-        private const val ACTION_TOGGLE = "com.castlite.phone.action.TOGGLE"
-        private const val ACTION_NEXT = "com.castlite.phone.action.NEXT"
-        private const val ACTION_PREVIOUS = "com.castlite.phone.action.PREVIOUS"
+        const val ACTION_STOP = "com.castlite.phone.action.STOP_SERVER"
+        const val ACTION_TOGGLE = "com.castlite.phone.action.TOGGLE"
+        const val ACTION_NEXT = "com.castlite.phone.action.NEXT"
+        const val ACTION_PREVIOUS = "com.castlite.phone.action.PREVIOUS"
+
+        /** PendingIntent for a playback control (notification, widget). */
+        fun controlIntent(context: Context, action: String, requestCode: Int): PendingIntent = PendingIntent.getService(
+            context, requestCode,
+            Intent(context, MediaServerService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
         /** States in which the TV is actively relying on the phone. */
         private val AWAKE_STATES = setOf(PlayerState.CONNECTING, PlayerState.LOADING, PlayerState.PLAYING)

@@ -34,6 +34,11 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.ClosedCaptionDisabled
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import com.castlite.protocol.RepeatMode
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -85,6 +90,8 @@ data class PlayerActions(
     val setVolume: (Int) -> Unit = {},
     val jumpTo: (Int) -> Unit = {},
     val retry: () -> Unit = {},
+    val cycleRepeat: () -> Unit = {},
+    val setSubtitles: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -111,7 +118,7 @@ fun NowPlayingScreen(session: CastSession, slideDurationMs: Long, actions: Playe
                 }
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("CASTING TO", style = MaterialTheme.typography.labelSmall, color = Palette.TextTertiary)
-                    Text(session.device.name, style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(session.devicesLabel, style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 ProtocolBadge(session.device.protocol, Modifier.padding(end = 8.dp))
             }
@@ -204,7 +211,13 @@ fun NowPlayingScreen(session: CastSession, slideDurationMs: Long, actions: Playe
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RoundIcon(Icons.Filled.Stop, "Stop", actions.stop, size = 48.dp, tint = Palette.TextSecondary)
+                RoundIcon(
+                    if (status.repeat == RepeatMode.ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                    "Repeat: ${status.repeat.name.lowercase()}",
+                    actions.cycleRepeat,
+                    size = 48.dp,
+                    tint = if (status.repeat == RepeatMode.OFF) Palette.TextSecondary else Palette.Cyan,
+                )
                 RoundIcon(Icons.Filled.SkipPrevious, "Previous", actions.previous, size = 56.dp, enabled = session.queue.size > 1 || status.positionMs > 0)
                 val playing = status.state == PlayerState.PLAYING || status.state == PlayerState.LOADING
                 Box(
@@ -222,7 +235,18 @@ fun NowPlayingScreen(session: CastSession, slideDurationMs: Long, actions: Playe
                 RoundIcon(Icons.Filled.Refresh, "Re-send to TV", actions.retry, size = 48.dp, tint = Palette.TextSecondary)
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                SmallChip(Icons.Filled.Stop, "Stop casting", onClick = actions.stop)
+                status.subtitlesEnabled?.let { on ->
+                    Spacer(Modifier.width(8.dp))
+                    SmallChip(if (on) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionDisabled, if (on) "Subtitles on" else "Subtitles off") {
+                        actions.setSubtitles(!on)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
 
             // --- Volume ----------------------------------------------------------
             VolumeCard(status.volume, actions.setVolume)

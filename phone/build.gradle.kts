@@ -23,9 +23,9 @@ android {
     }
 
     signingConfigs {
-        // A fixed debug key committed to the repo, so every CI build has the same
-        // signature and can be installed over the previous one without uninstalling.
-        getByName("debug") {
+        // One fixed key committed to the repo, so every CI build (debug or release) has the
+        // same signature and installs over the previous one — required for auto-updates.
+        create("castlite") {
             storeFile = rootProject.file("keystore/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -35,9 +35,14 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("castlite")
         }
+        // What CI publishes: not debuggable, so it runs noticeably faster (Compose and
+        // ExoPlayer are much slower in debuggable builds). Code shrinking stays off on
+        // purpose: it can't be verified without devices, and a broken release would also
+        // break the auto-updater that delivers the fix.
         release {
+            signingConfig = signingConfigs.getByName("castlite")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

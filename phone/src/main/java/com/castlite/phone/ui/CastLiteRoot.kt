@@ -6,7 +6,14 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.core.content.ContextCompat
+import com.castlite.phone.media.CastMedia
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -67,6 +74,39 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.onMediaPicked(uris)
     }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { vm.onFolderPicked(it) }
+    var subtitleFor by remember { mutableStateOf<CastMedia?>(null) }
+    val subtitlePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        subtitleFor?.let { vm.onSubtitlePicked(it, uri) }
+        subtitleFor = null
+    }
+
+    // Screen mirroring: (optional) sound permission → Android's "Start casting?" dialog → service.
+    var mirrorWithAudio by remember { mutableStateOf(false) }
+    val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) vm.startMirroring(result.resultCode, data, mirrorWithAudio)
+    }
+    val launchProjection = {
+        val mpm = context.getSystemService(MediaProjectionManager::class.java)
+        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+    val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        mirrorWithAudio = granted
+        launchProjection()
+    }
+    val startMirror = {
+        val problem = vm.mirrorProblem()
+        when {
+            problem != null -> vm.showMessage(problem)
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> { mirrorWithAudio = false; launchProjection() }
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> {
+                mirrorWithAudio = true
+                launchProjection()
+            }
+            else -> audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
 
@@ -112,14 +152,25 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                     state = state,
                     actions = HomeActions(
                         pickMedia = { picker.launch(PICKER_TYPES) },
+                        pickFolder = { folderPicker.launch(null) },
+                        addLink = vm::addLink,
                         chooseDevice = { screen = Screen.DEVICES },
-                        cast = { index -> vm.cast(index); screen = Screen.PLAYER },
+                        cast = { index -> if (vm.requestCast(index)) screen = Screen.PLAYER },
+                        shuffle = vm::shuffle,
+                        cycleRepeat = vm::cycleRepeat,
+                        setSlideshow = vm::setSlideshow,
+                        pickSubtitle = { item -> subtitleFor = item; subtitlePicker.launch(arrayOf("*/*")) },
+                        removeSubtitle = vm::removeSubtitle,
+                        mirror = startMirror,
+                        stopMirror = vm::stopMirroring,
+                        wakeTv = vm::wakeSelected,
+                        answerResume = { resume -> vm.answerResume(resume); screen = Screen.PLAYER },
+                        dismissResume = vm::dismissResume,
                         openPlayer = { screen = Screen.PLAYER },
                         openServer = { screen = Screen.SERVER },
                         remove = vm::remove,
                         move = vm::move,
                         clear = vm::clearQueue,
-                        setSlideDuration = vm::setSlideDuration,
                         togglePlayPause = vm::togglePlayPause,
                         allowBackground = allowBackground,
                         dismissBackgroundPrompt = vm::dismissBackgroundPrompt,
@@ -140,6 +191,9 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                             dismissManualEntry = devicesVm::dismissManualEntry,
                             addByIp = { ip -> devicesVm.addByIp(ip) { screen = Screen.HOME } },
                             removeManual = devicesVm::removeManual,
+                            toggleExtra = devicesVm::toggleExtra,
+                            saveMac = devicesVm::saveMac,
+                            wake = devicesVm::wake,
                         ),
                     )
                 }
@@ -160,6 +214,8 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                                 setVolume = vm::setVolume,
                                 jumpTo = vm::jumpTo,
                                 retry = vm::retry,
+                                cycleRepeat = vm::cycleRepeat,
+                                setSubtitles = vm::setSubtitles,
                             ),
                         )
                     }
@@ -175,6 +231,7 @@ fun CastLiteRoot(vm: MainViewModel = viewModel()) {
                         open = { url -> if (!context.openUrl(url)) vm.showMessage("No browser installed") },
                         allowBackground = allowBackground,
                         checkForUpdates = vm::checkForUpdates,
+                        sendDiagnostics = { vm.diagnostics { intent -> context.tryStart(intent) } },
                     ),
                 )
             }

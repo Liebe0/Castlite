@@ -1,7 +1,15 @@
 package com.castlite.tv.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.graphics.graphicsLayer
+import com.castlite.protocol.SlideTransition
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -26,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -382,6 +391,10 @@ private fun PlaybackOverlay(ui: TvUiState) {
                 Hint("OK", "play / pause")
                 Spacer(Modifier.width(20.dp))
                 Hint("◀ ▶", "10 s")
+                if (ui.subtitlesEnabled != null) {
+                    Spacer(Modifier.width(20.dp))
+                    Hint("CC", if (ui.subtitlesEnabled) "subtitles on" else "subtitles off")
+                }
                 Spacer(Modifier.width(20.dp))
                 Hint("BACK", "stop")
             }
@@ -478,25 +491,56 @@ private fun SpinningDisc(spinning: Boolean, size: Dp) {
 fun PhotoScreen(ui: TvUiState, onShown: (String) -> Unit, onFailed: (String, String?) -> Unit) {
     val url = ui.item?.url ?: return
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        Crossfade(targetState = url, animationSpec = tween(700), label = "photo") { current ->
+        val transition = ui.slideshow.transition
+        AnimatedContent(
+            targetState = url,
+            transitionSpec = {
+                when (transition) {
+                    SlideTransition.CROSSFADE -> fadeIn(tween(800)) togetherWith fadeOut(tween(800))
+                    SlideTransition.SLIDE -> (slideInHorizontally(tween(700)) { it } + fadeIn(tween(700))) togetherWith
+                        (slideOutHorizontally(tween(700)) { -it } + fadeOut(tween(700)))
+                    SlideTransition.ZOOM -> (scaleIn(tween(800), initialScale = 1.15f) + fadeIn(tween(800))) togetherWith
+                        (scaleOut(tween(800), targetScale = 0.92f) + fadeOut(tween(800)))
+                }
+            },
+            label = "photo",
+        ) { current ->
             // A new attempt number re-requests the photo after a network hiccup.
-            key(ui.imageAttempt) { Box(Modifier.fillMaxSize()) {
-                // Dimmed, cropped copy fills the letterbox bars with the photo's own colours.
-                AsyncImage(
-                    model = current,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().alpha(0.28f),
-                )
-                AsyncImage(
-                    model = current,
-                    contentDescription = ui.item.title,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
-                    onSuccess = { onShown(current) },
-                    onError = { onFailed(current, it.result.throwable.message) },
-                )
-            } }
+            key(ui.imageAttempt) {
+                Box(Modifier.fillMaxSize()) {
+                    // Dimmed, cropped copy fills the letterbox bars with the photo's own colours.
+                    AsyncImage(
+                        model = current,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().alpha(0.28f),
+                    )
+                    AsyncImage(
+                        model = current,
+                        contentDescription = ui.item.title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().kenBurns(
+                            key = current,
+                            enabled = ui.slideshow.kenBurns && ui.state != ReceiverState.PAUSED,
+                            durationMs = ui.slideDurationMs + 1_500,
+                        ),
+                        onSuccess = { onShown(current) },
+                        onError = { onFailed(current, it.result.throwable.message) },
+                    )
+                }
+            }
+        }
+        ui.musicTitle?.let { title ->
+            Row(
+                Modifier.align(Alignment.TopEnd).padding(horizontal = SafeH, vertical = SafeV)
+                    .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.45f))
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.MusicNote, contentDescription = null, tint = TvPalette.Pink, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(title, fontSize = 15.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 360.dp))
+            }
         }
         ui.warning?.let {
             Box(Modifier.align(Alignment.TopCenter).padding(top = SafeV)) { Warning(it) }
@@ -522,7 +566,8 @@ fun PhotoScreen(ui: TvUiState, onShown: (String) -> Unit, onFailed: (String, Str
                         when (ui.state) {
                             ReceiverState.PAUSED -> "Slideshow paused · press OK to continue"
                             ReceiverState.ENDED -> "End of slideshow"
-                            else -> "Slideshow · ${ui.slideDurationMs / 1000} s per photo"
+                            else -> "Slideshow · ${ui.slideDurationMs / 1000} s per photo" +
+                                if (ui.repeat == com.castlite.protocol.RepeatMode.ALL) " · repeating" else ""
                         },
                         fontSize = 16.sp,
                         color = Color.White.copy(alpha = 0.7f),
@@ -539,6 +584,29 @@ fun PhotoScreen(ui: TvUiState, onShown: (String) -> Unit, onFailed: (String, Str
         if (ui.state == ReceiverState.PLAYING && ui.index + 1 < ui.count) {
             SlideTimer(key = ui.index, durationMs = ui.slideDurationMs, modifier = Modifier.align(Alignment.BottomStart))
         }
+    }
+}
+
+/**
+ * Slow "Ken Burns" pan-and-zoom while a photo is on screen. Each photo gets its own
+ * direction (from the URL's hash) so a slideshow doesn't feel repetitive.
+ */
+@Composable
+private fun Modifier.kenBurns(key: String, enabled: Boolean, durationMs: Long): Modifier {
+    val progress = remember(key) { Animatable(0f) }
+    LaunchedEffect(key, enabled) {
+        if (enabled) progress.animateTo(1f, tween(((1f - progress.value) * durationMs).toInt().coerceAtLeast(1), easing = LinearEasing))
+    }
+    val seed = key.hashCode()
+    val dx = if (seed and 1 == 0) 1f else -1f
+    val dy = if (seed and 2 == 0) 1f else -1f
+    return graphicsLayer {
+        val p = progress.value
+        val scale = 1f + 0.10f * p
+        scaleX = scale
+        scaleY = scale
+        translationX = dx * size.width * 0.03f * p
+        translationY = dy * size.height * 0.02f * p
     }
 }
 
@@ -651,4 +719,49 @@ private fun fmt(ms: Long): String {
     if (ms <= 0) return "0:00"
     val s = ms / 1000
     return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+}
+
+// =====================================================================================
+// Mirroring
+// =====================================================================================
+
+/** The phone's screen, scaled to fit. [surface] is a SurfaceView hosting the decoder output. */
+@Composable
+fun MirrorScreen(state: com.castlite.tv.mirror.MirrorState, surface: @Composable (Modifier) -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        val ratio = if (state.width > 0 && state.height > 0) state.width.toFloat() / state.height else 16f / 9f
+        surface(Modifier.fillMaxHeight().aspectRatio(ratio, matchHeightConstraintsFirst = true))
+        if (state.width == 0) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Spinner()
+                Spacer(Modifier.height(16.dp))
+                Text("Connecting to your phone's screen…", fontSize = 20.sp, color = TvPalette.TextSecondary)
+            }
+        }
+        var showHint by remember { mutableStateOf(true) }
+        LaunchedEffect(state.phone) {
+            delay(4_000)
+            showHint = false
+        }
+        AnimatedVisibility(
+            visible = showHint,
+            enter = fadeIn(), exit = fadeOut(tween(600)),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = SafeV),
+        ) {
+            Row(
+                Modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Cast, contentDescription = null, tint = TvPalette.Cyan, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Mirroring ${state.phone?.let { "from $it" } ?: "your phone"}" + if (state.hasAudio) " · with sound" else "",
+                    fontSize = 16.sp, color = Color.White,
+                )
+                Spacer(Modifier.width(18.dp))
+                Hint("BACK", "stop")
+            }
+        }
+    }
 }

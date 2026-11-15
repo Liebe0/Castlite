@@ -6,6 +6,7 @@ import android.util.Log
 import com.castlite.phone.cast.CastDevice
 import com.castlite.phone.cast.CastProtocol
 import com.castlite.phone.cast.DlnaEndpoints
+import com.castlite.phone.diagnostics.Diag
 import com.castlite.phone.net.LanMonitor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -97,11 +98,11 @@ class DlnaDiscovery(context: Context) {
                 host = URL(reply.location).host,
                 manufacturer = d.manufacturer,
                 model = d.modelName,
-                dlna = DlnaEndpoints(reply.location, d.avTransportControlUrl, d.renderingControlUrl),
-            )
+                dlna = DlnaEndpoints(reply.location, d.avTransportControlUrl, d.renderingControlUrl, d.connectionManagerUrl),
+            ).also { Diag.log("ssdp", "Found ${it.name} (${it.details}) at ${reply.location}, server=${reply.server}") }
         }
     } catch (e: Exception) {
-        Log.d(TAG, "Ignoring ${reply.location}: ${e.message}")
+        Diag.log("ssdp", "Ignoring ${reply.location}: ${e.message}")
         null
     }
 

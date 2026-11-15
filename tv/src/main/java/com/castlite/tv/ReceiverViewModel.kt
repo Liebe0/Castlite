@@ -2,103 +2,44 @@ package com.castlite.tv
 
 import android.app.Application
 import android.content.Intent
-import android.os.Build
-import android.provider.Settings
-import android.util.Log
 import android.view.KeyEvent
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.castlite.protocol.Command
-import com.castlite.protocol.ReceiverApiServer
-import com.castlite.protocol.ReceiverHandler
-import com.castlite.protocol.ReceiverInfo
-import com.castlite.protocol.ReceiverProtocol
-import com.castlite.protocol.ReceiverStatus
-import com.castlite.tv.net.NsdAdvertiser
+import com.castlite.tv.mirror.MirrorState
 import com.castlite.tv.playback.PlaybackEngine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import com.castlite.updater.AppUpdater
 import com.castlite.updater.UpdateState
-import java.io.IOException
+import kotlinx.coroutines.flow.StateFlow
 
-/** Address and health of the receiver, shown on the idle screen. */
-data class ReceiverInfoState(
-    val deviceName: String,
-    val ipAddress: String? = null,
-    val port: Int = ReceiverProtocol.PORT,
-    val listening: Boolean = false,
-    val serverError: String? = null,
-)
+/** Thin bridge between the TV screens and the always-on [ReceiverRuntime]. */
+class ReceiverViewModel(app: Application) : AndroidViewModel(app) {
 
-/**
- * Hosts the receiver: the JSON API server (phone → TV commands), the NSD
- * advertisement and the [PlaybackEngine]. Receiving is active while the activity
- * is started; leaving the app stops playback and the server.
- */
-class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandler {
+    val engine: PlaybackEngine get() = ReceiverRuntime.engine
+    val info: StateFlow<ReceiverInfoState> get() = ReceiverRuntime.info
+    val mirror: StateFlow<MirrorState> get() = ReceiverRuntime.mirror.state
+    val updater: AppUpdater = (app as CastLiteTvApp).updater
 
-    val engine = PlaybackEngine(app, viewModelScope)
-    val updater = (app as CastLiteTvApp).updater
-    @Volatile private var visible = false
-    private val nsd = NsdAdvertiser(app)
-    private var server: ReceiverApiServer? = null
-
-    private val deviceName: String = Settings.Global.getString(app.contentResolver, "device_name")
-        ?.takeIf { it.isNotBlank() } ?: Build.MODEL
-
-    private val _info = MutableStateFlow(ReceiverInfoState(deviceName, LocalAddress.ipv4()))
-    val info: StateFlow<ReceiverInfoState> = _info.asStateFlow()
-
-    init {
-        // Never interrupt playback with an update: install only on the idle screen.
-        updater.canInstallNow = { visible && engine.ui.value.isIdle }
-        viewModelScope.launch {
-            engine.ui.map { it.isIdle }.distinctUntilChanged().collect { idle -> if (idle) updater.installIfReady() }
-        }
-    }
-
-    fun startReceiving() {
-        visible = true
+    fun onScreenVisible() {
+        ReceiverService.start(getApplication())
+        ReceiverRuntime.start() // idempotent; works even if a TV refuses the background service
+        ReceiverRuntime.activityVisible.value = true
         updater.onForeground()
         refreshAddress()
-        if (server == null) {
-            val s = ReceiverApiServer(this, ReceiverProtocol.PORT)
-            try {
-                s.start(5_000, true)
-                server = s
-                _info.value = _info.value.copy(listening = true, serverError = null)
-            } catch (e: IOException) {
-                Log.e(TAG, "Couldn't open port ${ReceiverProtocol.PORT}", e)
-                _info.value = _info.value.copy(
-                    listening = false,
-                    serverError = "Port ${ReceiverProtocol.PORT} is busy. Restart the TV and open CastLite again.",
-                )
-                return
+    }
+
+    fun onScreenHidden() = ReceiverRuntime.onActivityHidden()
+
+    fun refreshAddress() = ReceiverRuntime.refreshAddress()
+
+    fun handleKey(event: KeyEvent): Boolean {
+        if (mirror.value.active) {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.action == KeyEvent.ACTION_UP) ReceiverRuntime.mirror.disconnect()
+                return true
             }
+            return false
         }
-        nsd.register(deviceName, ReceiverProtocol.PORT)
+        return engine.handleKey(event)
     }
-
-    fun stopReceiving() {
-        visible = false
-        nsd.unregister()
-        server?.stop()
-        server = null
-        _info.value = _info.value.copy(listening = false)
-        engine.stop(message = null)
-    }
-
-    fun refreshAddress() {
-        _info.value = _info.value.copy(ipAddress = LocalAddress.ipv4())
-    }
-
-    fun handleKey(event: KeyEvent): Boolean = engine.handleKey(event)
 
     /**
      * OK pressed on the idle screen: act on a pending update. Returns a settings screen to
@@ -109,33 +50,5 @@ class ReceiverViewModel(app: Application) : AndroidViewModel(app), ReceiverHandl
         is UpdateState.ReadyToInstall -> { updater.installIfReady(userInitiated = true); null }
         is UpdateState.Failed -> { updater.check(userInitiated = true); null }
         else -> null
-    }
-
-    // ---- ReceiverHandler (called on server threads) --------------------------------
-
-    override fun info() = ReceiverInfo(name = deviceName, model = "${Build.MANUFACTURER} ${Build.MODEL}", appVersion = appVersion())
-
-    override fun status(): ReceiverStatus = engine.status()
-
-    override fun handle(command: Command, client: String): ReceiverStatus =
-        // ExoPlayer may only be touched on the main thread.
-        runBlocking(Dispatchers.Main.immediate) {
-            engine.execute(command, client)
-            engine.status()
-        }
-
-    private fun appVersion(): String = try {
-        getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName ?: "?"
-    } catch (e: Exception) {
-        "?"
-    }
-
-    override fun onCleared() {
-        stopReceiving()
-        engine.release()
-    }
-
-    private companion object {
-        const val TAG = "ReceiverViewModel"
     }
 }

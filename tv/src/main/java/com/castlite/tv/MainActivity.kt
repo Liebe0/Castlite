@@ -15,11 +15,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.castlite.tv.ui.ReceiverApp
 import com.castlite.tv.ui.TvTheme
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Receiver entry point. While this activity is visible the TV listens for the phone
- * (HTTP API on port 8766 + mDNS advertisement) and plays whatever it sends.
+ * Receiver screen. The receiver itself (API on port 8766, mDNS, player, mirroring) runs
+ * in [ReceiverService] and opens this activity when the phone starts casting.
  */
 class MainActivity : ComponentActivity() {
 
@@ -35,8 +36,8 @@ class MainActivity : ComponentActivity() {
         // Keep the screen awake while something is playing.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                vm.engine.ui.collect { state ->
-                    if (state.isIdle) {
+                combine(vm.engine.ui, vm.mirror) { ui, mirror -> ui.isIdle && !mirror.active }.collect { idle ->
+                    if (idle) {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     } else {
                         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -48,11 +49,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        vm.startReceiving()
+        vm.onScreenVisible()
     }
 
     override fun onStop() {
-        vm.stopReceiving()
+        // The receiver keeps listening in the background (ReceiverService); only what
+        // needs the screen stops.
+        vm.onScreenHidden()
         super.onStop()
     }
 

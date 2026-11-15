@@ -9,6 +9,7 @@ import com.castlite.phone.cast.DeviceRepository
 import com.castlite.phone.cast.receiver.ReceiverDiscovery
 import com.castlite.phone.net.LanMonitor
 import com.castlite.phone.net.LanStatus
+import com.castlite.phone.net.WakeOnLan
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +29,10 @@ data class DevicesUiState(
     val selectedId: String? = null,
     val lan: LanStatus = LanStatus.Disconnected,
     val manual: ManualEntry = ManualEntry.Hidden,
+    /** Other TVs that play along with the selected one. */
+    val extraIds: Set<String> = emptySet(),
+    /** Device id → MAC for "Turn on TV". */
+    val macs: Map<String, String> = emptyMap(),
 )
 
 /** Runs discovery while the device picker is on screen. */
@@ -41,9 +46,26 @@ class DevicesViewModel(app: Application) : AndroidViewModel(app) {
         CastManager.selectedDevice,
         LanMonitor(app).status,
         manual,
-    ) { devices, selected, lan, entry ->
-        DevicesUiState(devices, selected?.id, lan, entry)
+        combine(CastManager.extraDevices, CastManager.macs) { extras, macs -> extras.map { it.id }.toSet() to macs },
+    ) { devices, selected, lan, entry, (extras, macs) ->
+        DevicesUiState(devices, selected?.id, lan, entry, extras, macs)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(3_000), DevicesUiState())
+
+    /** Also play on [device] (party mode), or stop doing so. */
+    fun toggleExtra(device: CastDevice) = CastManager.toggleExtraDevice(device)
+
+    /** Saves a MAC address for Wake-on-LAN; returns an error message if it's invalid. */
+    fun saveMac(device: CastDevice, text: String): String? {
+        if (text.isBlank()) {
+            CastManager.setMac(device, null)
+            return null
+        }
+        val mac = WakeOnLan.formatMac(text) ?: return "That's not a MAC address (it looks like A1:B2:C3:D4:E5:F6)"
+        CastManager.setMac(device, mac)
+        return null
+    }
+
+    fun wake(device: CastDevice) = CastManager.wake(device)
 
     fun select(device: CastDevice) = CastManager.select(device)
 

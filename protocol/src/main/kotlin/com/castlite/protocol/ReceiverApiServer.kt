@@ -20,6 +20,9 @@ interface ReceiverHandler {
      * @throws IllegalArgumentException / IllegalStateException with a readable message.
      */
     fun handle(command: Command, client: String): ReceiverStatus
+
+    /** Plain-text diagnostics (device info, capabilities, recent log). */
+    fun diagnostics(): String = ""
 }
 
 /** HTTP server for the receiver API (see [ReceiverProtocol]). Runs inside the TV app. */
@@ -41,6 +44,8 @@ class ReceiverApiServer(
                 session.method == Method.GET && session.uri == ReceiverProtocol.PATH_STATUS ->
                     ok(ReceiverProtocol.json.encodeToString(ReceiverStatus.serializer(), handler.status()))
                 session.method == Method.POST && session.uri == ReceiverProtocol.PATH_COMMAND -> command(session)
+                session.method == Method.GET && session.uri == ReceiverProtocol.PATH_DIAGNOSTICS ->
+                    newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", handler.diagnostics())
                 else -> result(Response.Status.NOT_FOUND, CommandResult(false, "Unknown endpoint ${session.method} ${session.uri}"))
             }
         } catch (e: Exception) {

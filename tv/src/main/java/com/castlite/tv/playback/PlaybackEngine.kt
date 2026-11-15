@@ -2,25 +2,30 @@ package com.castlite.tv.playback
 
 import android.content.Context
 import android.media.AudioManager
+import android.net.Uri
 import android.view.KeyEvent
 import androidx.annotation.OptIn
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.castlite.protocol.Command
 import com.castlite.protocol.MediaType
 import com.castlite.protocol.QueueItem
 import com.castlite.protocol.ReceiverState
 import com.castlite.protocol.ReceiverStatus
+import com.castlite.protocol.RepeatMode
+import com.castlite.protocol.SlideshowOptions
+import com.castlite.tv.TvLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -35,6 +40,7 @@ import kotlin.math.roundToInt
 /** Everything the TV screens render. */
 data class TvUiState(
     val item: QueueItem? = null,
+    /** Index in the phone's full queue. */
     val index: Int = -1,
     val count: Int = 0,
     val state: ReceiverState = ReceiverState.IDLE,
@@ -45,7 +51,12 @@ data class TvUiState(
     /** Non-fatal problem, e.g. "video format unsupported, playing audio only". */
     val warning: String? = null,
     val overlayVisible: Boolean = false,
-    val slideDurationMs: Long = 5_000,
+    val slideshow: SlideshowOptions = SlideshowOptions(),
+    val repeat: RepeatMode = RepeatMode.OFF,
+    /** null = the current item has no subtitles. */
+    val subtitlesEnabled: Boolean? = null,
+    /** Title of the song playing behind a slideshow. */
+    val musicTitle: String? = null,
     val volumePercent: Int? = null,
     /** IP of the phone that sent the last command. */
     val phone: String? = null,
@@ -56,6 +67,10 @@ data class TvUiState(
 ) {
     val isIdle: Boolean get() = item == null
     val isPlaying: Boolean get() = state == ReceiverState.PLAYING
+    val slideDurationMs: Long get() = slideshow.durationMs
+
+    /** Video and photos need the TV screen; songs can keep playing in the background. */
+    val needsScreen: Boolean get() = item != null && item.type != MediaType.AUDIO
 }
 
 /**
@@ -92,7 +107,10 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     private val _ui = MutableStateFlow(TvUiState(volumePercent = readVolume()))
     val ui: StateFlow<TvUiState> = _ui.asStateFlow()
 
+    private var plan = QueuePlan(emptyList(), emptyList(), emptyList())
     private var cursor = QueueCursor()
+    /** Remembered across items: the viewer turned subtitles off/on. */
+    private var subtitlesWanted = true
     private var slideJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
@@ -102,6 +120,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     init {
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (plan.musicMode) return // background music: the photos drive the state
                 _ui.update { it.copy(isBuffering = playbackState == Player.STATE_BUFFERING) }
                 if (playbackState == Player.STATE_READY) {
                     reconnectAttempts = 0
@@ -115,6 +134,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (plan.musicMode) return
                 if (isPlaying) {
                     _ui.update { it.copy(state = ReceiverState.PLAYING) }
                 } else if (player.playbackState == Player.STATE_READY && !player.playWhenReady) {
@@ -124,7 +144,17 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
                 syncPosition()
             }
 
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (plan.musicMode) _ui.update { it.copy(musicTitle = mediaItem?.mediaMetadata?.title?.toString()) }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
+                TvLog.log("player", "Error ${error.errorCodeName}: ${error.message} (cause: ${error.cause?.message})")
+                if (plan.musicMode) {
+                    // A broken song shouldn't stop the slideshow.
+                    _ui.update { it.copy(warning = "Background music stopped: ${PlaybackErrors.describe(error)}", musicTitle = null) }
+                    return
+                }
                 slideJob?.cancel()
                 // The phone may just be briefly unreachable (screen off, Wi-Fi power-save,
                 // roaming): keep trying for a while before showing an error.
@@ -145,8 +175,10 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             }
 
             override fun onTracksChanged(tracks: Tracks) {
+                if (plan.musicMode) return
                 val videoBroken = tracks.containsType(C.TRACK_TYPE_VIDEO) && !tracks.isTypeSupported(C.TRACK_TYPE_VIDEO)
                 val audioBroken = tracks.containsType(C.TRACK_TYPE_AUDIO) && !tracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
+                if (videoBroken || audioBroken) TvLog.log("player", "Unsupported track(s): video=$videoBroken audio=$audioBroken")
                 _ui.update {
                     it.copy(
                         warning = when {
@@ -163,6 +195,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     // ---- Commands from the phone -------------------------------------------------
 
     fun execute(command: Command, client: String) {
+        TvLog.log("cmd", "${command::class.simpleName} from $client")
         _ui.update { it.copy(phone = client) }
         when (command) {
             is Command.Load -> load(command)
@@ -174,6 +207,8 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             is Command.Seek -> seekTo(command.positionMs)
             is Command.JumpTo -> jumpTo(command.index)
             is Command.SetVolume -> setVolume(command.percent)
+            is Command.SetRepeat -> _ui.update { it.copy(repeat = command.mode) }
+            is Command.SetSubtitles -> setSubtitles(command.enabled)
         }
     }
 
@@ -190,13 +225,28 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             title = s.item?.title,
             type = s.item?.type,
             error = s.error ?: s.warning,
+            repeat = s.repeat,
+            subtitlesEnabled = s.subtitlesEnabled,
         )
     }
 
     private fun load(command: Command.Load) {
         require(command.items.isNotEmpty()) { "The queue is empty" }
-        cursor = QueueCursor(command.items, command.startIndex)
-        _ui.update { it.copy(slideDurationMs = command.slideDurationMs.coerceIn(1_000, 120_000), lastMessage = null) }
+        val options = command.slideshow ?: SlideshowOptions(durationMs = command.slideDurationMs)
+        plan = QueuePlan.of(command.items, options.music)
+        val start = plan.shownPosition(command.startIndex) ?: 0
+        cursor = QueueCursor(plan.shown, start)
+        _ui.update {
+            it.copy(
+                slideshow = options.copy(durationMs = options.durationMs.coerceIn(1_000, 120_000)),
+                repeat = command.repeat,
+                count = command.items.size,
+                lastMessage = null,
+                musicTitle = null,
+            )
+        }
+        TvLog.log("queue", "Loaded ${command.items.size} item(s), start=${command.startIndex}, repeat=${command.repeat}, music=${plan.musicMode}")
+        if (plan.musicMode) startMusic()
         startItem(command.startPositionMs)
         startTicker()
     }
@@ -205,6 +255,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         val item = cursor.current ?: return
         if (item.type == MediaType.IMAGE) {
             _ui.update { it.copy(state = ReceiverState.PLAYING) }
+            if (plan.musicMode) player.play()
             scheduleSlide()
         } else {
             if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
@@ -218,6 +269,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         val item = cursor.current ?: return
         if (item.type == MediaType.IMAGE) {
             slideJob?.cancel()
+            if (plan.musicMode) player.pause()
             _ui.update { it.copy(state = ReceiverState.PAUSED) }
         } else {
             player.pause()
@@ -235,10 +287,18 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         tickerJob?.cancel()
         player.stop()
         player.clearMediaItems()
+        player.repeatMode = Player.REPEAT_MODE_OFF
+        plan = QueuePlan(emptyList(), emptyList(), emptyList())
         cursor = QueueCursor()
+        if (message != null) TvLog.log("queue", "Stopped: $message")
         _ui.update {
-            TvUiState(volumePercent = readVolume(), phone = it.phone, lastMessage = message, slideDurationMs = it.slideDurationMs)
+            TvUiState(volumePercent = readVolume(), phone = it.phone, lastMessage = message, slideshow = it.slideshow, repeat = it.repeat)
         }
+    }
+
+    /** The TV app went to the background: stop what needs the screen, keep music playing. */
+    fun onScreenHidden() {
+        if (_ui.value.needsScreen) stop("Stopped because CastLite was closed on the TV")
     }
 
     fun seekTo(positionMs: Long) {
@@ -253,8 +313,12 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         seekTo((player.currentPosition + deltaMs).coerceIn(0, duration))
     }
 
+    /** Next item; with repeat-all it wraps around. Returns false at the end of the queue. */
     fun next(): Boolean {
-        if (!cursor.next()) return false
+        if (!cursor.next()) {
+            if (_ui.value.repeat != RepeatMode.ALL || cursor.items.isEmpty()) return false
+            cursor.jumpTo(0)
+        }
         startItem(0)
         return true
     }
@@ -265,8 +329,10 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         startItem(0)
     }
 
-    fun jumpTo(index: Int) {
-        cursor.jumpTo(index)
+    fun jumpTo(fullQueueIndex: Int) {
+        val position = plan.shownPosition(fullQueueIndex)
+            ?: throw IllegalArgumentException("That song is the slideshow's background music")
+        cursor.jumpTo(position)
         startItem(0)
     }
 
@@ -280,6 +346,19 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             player.volume = p / 100f
         }
         _ui.update { it.copy(volumePercent = p) }
+    }
+
+    fun setSubtitles(enabled: Boolean) {
+        subtitlesWanted = enabled
+        applySubtitlePreference()
+        _ui.update { if (it.subtitlesEnabled != null) it.copy(subtitlesEnabled = enabled) else it }
+        showOverlay()
+    }
+
+    private fun applySubtitlePreference() {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesWanted)
+            .build()
     }
 
     // ---- Image callbacks from the UI -------------------------------------------------
@@ -306,6 +385,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             }
             return
         }
+        TvLog.log("photo", "Couldn't load $url: $reason")
         _ui.update {
             it.copy(state = ReceiverState.ERROR, warning = null, error = "Couldn't show this photo" + (reason?.let { r -> " ($r)" } ?: "") + ".")
         }
@@ -338,6 +418,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
                 if (isImage) previous() else seekBy(-SEEK_STEP_MS)
             KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_CHANNEL_UP -> next()
             KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_CHANNEL_DOWN -> previous()
+            KeyEvent.KEYCODE_CAPTIONS -> if (_ui.value.subtitlesEnabled != null) setSubtitles(!subtitlesWanted)
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU -> showOverlay()
             KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
                 if (_ui.value.overlayVisible && _ui.value.state == ReceiverState.PLAYING) hideOverlay() else stop("Stopped")
@@ -355,6 +436,42 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     // ---- Internals ------------------------------------------------------------------------
 
+    private fun startMusic() {
+        player.setMediaItems(plan.music.map { mediaItemFor(it) })
+        player.repeatMode = Player.REPEAT_MODE_ALL
+        player.prepare()
+        player.playWhenReady = true
+        _ui.update { it.copy(musicTitle = plan.music.first().title) }
+    }
+
+    private fun mediaItemFor(item: QueueItem): MediaItem {
+        val builder = MediaItem.Builder()
+            .setUri(item.url)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(item.title).build())
+        // Streaming playlists from web links need their type spelled out.
+        when {
+            item.mimeType.contains("mpegurl", ignoreCase = true) || item.url.substringBefore('?').endsWith(".m3u8") ->
+                builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        }
+        val subUrl = item.subtitleUrl
+        if (subUrl != null) {
+            val mime = when {
+                item.subtitleMimeType?.contains("vtt") == true || subUrl.endsWith(".vtt") -> MimeTypes.TEXT_VTT
+                else -> MimeTypes.APPLICATION_SUBRIP
+            }
+            builder.setSubtitleConfigurations(
+                listOf(
+                    MediaItem.SubtitleConfiguration.Builder(Uri.parse(subUrl))
+                        .setMimeType(mime)
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .setLanguage("und")
+                        .build(),
+                ),
+            )
+        }
+        return builder.build()
+    }
+
     private fun startItem(startPositionMs: Long) {
         val item = cursor.current ?: return
         slideJob?.cancel()
@@ -363,26 +480,26 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
         _ui.update {
             it.copy(
                 item = item,
-                index = cursor.index,
-                count = cursor.items.size,
+                index = plan.fullIndex.getOrElse(cursor.index) { cursor.index },
                 state = ReceiverState.LOADING,
                 positionMs = 0,
                 durationMs = item.durationMs,
                 error = null,
                 warning = null,
                 lastMessage = null,
+                subtitlesEnabled = if (item.subtitleUrl != null) subtitlesWanted else null,
             )
         }
         if (item.type == MediaType.IMAGE) {
-            // Photos are drawn by Compose (Coil); the image screen reports back via onImageShown().
-            player.stop()
-            player.clearMediaItems()
+            // Photos are drawn by Compose (Coil); the photo screen reports back via onImageShown().
+            if (!plan.musicMode) {
+                player.stop()
+                player.clearMediaItems()
+            }
         } else {
-            val mediaItem = MediaItem.Builder()
-                .setUri(item.url)
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(item.title).build())
-                .build()
-            player.setMediaItem(mediaItem, startPositionMs.coerceAtLeast(0))
+            applySubtitlePreference()
+            player.repeatMode = Player.REPEAT_MODE_OFF
+            player.setMediaItem(mediaItemFor(item), startPositionMs.coerceAtLeast(0))
             player.prepare()
             player.playWhenReady = true
         }
@@ -390,10 +507,15 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
     }
 
     private fun advanceOrFinish() {
+        val repeat = _ui.value.repeat
+        if (repeat == RepeatMode.ONE) {
+            startItem(0)
+            return
+        }
         if (next()) return
         slideJob?.cancel()
         if (cursor.current?.type == MediaType.IMAGE) {
-            // Leave the last photo up.
+            // Leave the last photo up (music keeps playing).
             _ui.update { it.copy(state = ReceiverState.ENDED) }
         } else {
             stop("Finished playing")
@@ -458,11 +580,11 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
 
     private companion object {
         const val SEEK_STEP_MS = 10_000L
+        const val OVERLAY_TIMEOUT_MS = 4_000L
         const val RECONNECTING = "Reconnecting to your phone…"
         /** After ExoPlayer's own retries give up, try again this many times (~1 min more). */
         val RECONNECT_DELAYS_MS = longArrayOf(3_000, 6_000, 10_000, 15_000, 20_000)
         val IMAGE_RETRY_DELAYS_MS = longArrayOf(1_500, 3_000, 5_000, 8_000)
-        const val OVERLAY_TIMEOUT_MS = 4_000L
         val HANDLED_KEYS = setOf(
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_HEADSETHOOK,
@@ -470,7 +592,7 @@ class PlaybackEngine(context: Context, private val scope: CoroutineScope) {
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_REWIND, KeyEvent.KEYCODE_MEDIA_NEXT,
             KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_CHANNEL_DOWN,
-            KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE,
+            KeyEvent.KEYCODE_CAPTIONS, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE,
         )
     }
 }

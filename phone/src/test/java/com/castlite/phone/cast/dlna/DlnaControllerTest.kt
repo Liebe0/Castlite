@@ -1,6 +1,9 @@
 package com.castlite.phone.cast.dlna
 
 import com.castlite.phone.cast.CastDevice
+import com.castlite.phone.cast.CastOptions
+import com.castlite.protocol.RepeatMode
+import com.castlite.protocol.SlideshowOptions
 import com.castlite.phone.cast.CastException
 import com.castlite.phone.cast.CastProtocol
 import com.castlite.phone.cast.DlnaEndpoints
@@ -38,12 +41,14 @@ class DlnaControllerTest {
 
     private fun entries(vararg m: CastMedia) = m.map { QueueEntry(it, "http://192.168.1.2:8765${it.path}") }
 
+    private fun opts(slide: Long = 5_000, repeat: RepeatMode = RepeatMode.OFF) = CastOptions(repeat, SlideshowOptions(durationMs = slide))
+
     @Before fun setUp() {
         tv = FakeRenderer().apply { start(5_000, true) }
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val device = CastDevice(
             id = "uuid:lg", name = "LG TV", protocol = CastProtocol.DLNA, host = "127.0.0.1",
-            dlna = DlnaEndpoints("${tv.baseUrl}/d.xml", "${tv.baseUrl}/AVTransport/control", "${tv.baseUrl}/RenderingControl/control"),
+            dlna = DlnaEndpoints("${tv.baseUrl}/d.xml", "${tv.baseUrl}/AVTransport/control", "${tv.baseUrl}/RenderingControl/control", "${tv.baseUrl}/ConnectionManager/control"),
         )
         controller = DlnaController(device, scope, pollIntervalMs = 50, retryDelayMs = 20, startTimeoutMs = 600)
     }
@@ -59,7 +64,7 @@ class DlnaControllerTest {
     }
 
     @Test fun loadSendsUriWithDidlThenPlays() = runBlocking {
-        controller.load(entries(video1, video2), 0, 0, 5_000)
+        controller.load(entries(video1, video2), 0, 0, opts())
         assertEquals(listOf("Stop", "SetAVTransportURI", "Play"), tv.actions().take(3))
         val setUri = tv.calls.first { it.action == "SetAVTransportURI" }.body
         assertTrue(setUri.contains("<CurrentURI>http://192.168.1.2:8765/media/v1/v1.bin</CurrentURI>"))
@@ -71,7 +76,7 @@ class DlnaControllerTest {
     }
 
     @Test fun pollingReportsPositionDurationAndVolume() {
-        runBlocking { controller.load(entries(video1), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1), 0, 0, opts()) }
         tv.relTime = "0:01:02"
         tv.duration = "0:10:00"
         val s = runBlocking { withTimeout(3_000) { controller.status.first { it.positionMs == 62_000L && it.volume == 30 } } }
@@ -79,7 +84,7 @@ class DlnaControllerTest {
     }
 
     @Test fun controlsMapToSoapActions() = runBlocking {
-        controller.load(entries(video1), 0, 0, 5_000)
+        controller.load(entries(video1), 0, 0, opts())
         controller.pause()
         assertEquals(PlayerState.PAUSED, controller.status.value.state)
         controller.seekTo(83_000)
@@ -102,7 +107,7 @@ class DlnaControllerTest {
     }
 
     @Test fun advancesToNextItemWhenOneFinishes() {
-        runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1, video2), 0, 0, opts()) }
         awaitState(PlayerState.PLAYING)
         finishCurrentItem() // the TV reached the end of video 1
         runBlocking { withTimeout(3_000) { controller.status.first { it.index == 1 && it.state == PlayerState.PLAYING } } }
@@ -113,14 +118,14 @@ class DlnaControllerTest {
     }
 
     @Test fun endsAfterLastItem() {
-        runBlocking { controller.load(entries(video1), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1), 0, 0, opts()) }
         awaitState(PlayerState.PLAYING)
         finishCurrentItem()
         awaitState(PlayerState.ENDED)
     }
 
     @Test fun stopMidVideoIsAnInterruptionNotTheEnd() {
-        runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1, video2), 0, 0, opts()) }
         awaitState(PlayerState.PLAYING)
         tv.relTime = "0:01:40"
         runBlocking { withTimeout(3_000) { controller.status.first { it.positionMs == 100_000L } } }
@@ -133,7 +138,7 @@ class DlnaControllerTest {
     }
 
     @Test fun renderersWithoutPositionsStillAdvance() {
-        runBlocking { controller.load(entries(video1, video2), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1, video2), 0, 0, opts()) }
         awaitState(PlayerState.PLAYING)
         Thread.sleep(150) // RelTime stays 0:00:00 ("not implemented")
         tv.transportState = "STOPPED"
@@ -141,7 +146,7 @@ class DlnaControllerTest {
     }
 
     @Test fun userStopDoesNotAdvance() = runBlocking {
-        controller.load(entries(video1, video2), 0, 0, 5_000)
+        controller.load(entries(video1, video2), 0, 0, opts())
         awaitState(PlayerState.PLAYING)
         controller.stop()
         Thread.sleep(300)
@@ -150,14 +155,14 @@ class DlnaControllerTest {
     }
 
     @Test fun photoSlideshowAdvancesOnTimer() {
-        runBlocking { controller.load(entries(photo1, photo2), 0, 0, slideDurationMs = 200) }
+        runBlocking { controller.load(entries(photo1, photo2), 0, 0, opts(slide = 200)) }
         assertTrue(tv.calls.first { it.action == "SetAVTransportURI" }.body.contains("object.item.imageItem.photo"))
         runBlocking { withTimeout(3_000) { controller.status.first { it.index == 1 } } }
         awaitState(PlayerState.ENDED)
     }
 
     @Test fun pausedSlideshowStays() = runBlocking {
-        controller.load(entries(photo1, photo2), 0, 0, slideDurationMs = 200)
+        controller.load(entries(photo1, photo2), 0, 0, opts(slide = 200))
         controller.pause()
         Thread.sleep(500)
         assertEquals(0, controller.status.value.index)
@@ -165,14 +170,14 @@ class DlnaControllerTest {
 
     @Test fun retriesPlayWhileTransitioning() = runBlocking {
         tv.playFailures = 2
-        controller.load(entries(video1), 0, 0, 5_000)
+        controller.load(entries(video1), 0, 0, opts())
         assertEquals(3, tv.actions().count { it == "Play" })
     }
 
     @Test fun unsupportedFormatGivesReadableError() = runBlocking {
         tv.rejectUriWith = 714
         try {
-            controller.load(entries(video2), 0, 0, 5_000)
+            controller.load(entries(video2), 0, 0, opts())
             fail("expected CastException")
         } catch (e: CastException) {
             assertTrue(e.message!!, e.message!!.contains("doesn't support this file type (video/x-matroska)"))
@@ -181,21 +186,21 @@ class DlnaControllerTest {
 
     @Test fun reportsWhenTvNeverStartsPlaying() {
         tv.neverStarts = true
-        runBlocking { controller.load(entries(video1), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1), 0, 0, opts()) }
         tv.transportState = "STOPPED" // LG shows "file not supported" and drops back to STOPPED
         val s = runBlocking { withTimeout(3_000) { controller.status.first { it.state == PlayerState.ERROR } } }
         assertTrue(s.error!!, s.error!!.contains("can't play this format"))
     }
 
     @Test fun reportsLostConnection() {
-        runBlocking { controller.load(entries(video1), 0, 0, 5_000) }
+        runBlocking { controller.load(entries(video1), 0, 0, opts()) }
         tv.stop() // TV switched off / Wi-Fi gone
         val s = runBlocking { withTimeout(10_000) { controller.status.first { it.state == PlayerState.ERROR } } }
         assertTrue(s.error!!.contains("Lost connection"))
     }
 
     @Test fun nextAndPreviousNavigateTheQueue() = runBlocking {
-        controller.load(entries(video1, video2), 0, 0, 5_000)
+        controller.load(entries(video1, video2), 0, 0, opts())
         controller.next()
         assertEquals(1, controller.status.value.index)
         try {
@@ -206,5 +211,38 @@ class DlnaControllerTest {
         }
         controller.previous()
         assertEquals(0, controller.status.value.index)
+    }
+
+    @Test fun repeatAllWrapsToTheStart() {
+        runBlocking { controller.load(entries(video1, video2), 1, 0, opts(repeat = RepeatMode.ALL)) }
+        awaitState(PlayerState.PLAYING)
+        finishCurrentItem()
+        runBlocking { withTimeout(3_000) { controller.status.first { it.index == 0 && it.state == PlayerState.PLAYING } } }
+        runBlocking { controller.next() } // and Next at the end wraps too
+        assertEquals(1, controller.status.value.index)
+        runBlocking { controller.next() }
+        assertEquals(0, controller.status.value.index)
+    }
+
+    @Test fun repeatOneReplaysTheSameItem() {
+        runBlocking { controller.load(entries(video1, video2), 0, 0, opts(repeat = RepeatMode.ONE)) }
+        awaitState(PlayerState.PLAYING)
+        finishCurrentItem()
+        runBlocking { withTimeout(3_000) { while (tv.actions().count { it == "SetAVTransportURI" } < 2) kotlinx.coroutines.delay(20) } }
+        assertEquals(0, controller.status.value.index)
+        assertTrue(tv.calls.filter { it.action == "SetAVTransportURI" }.all { it.body.contains("/media/v1/") })
+    }
+
+    @Test fun subtitlesTravelInDidl() = runBlocking {
+        val withSubs = video1.copy(subtitle = com.castlite.phone.media.SubtitleRef("content://s", "v1.srt", "application/x-subrip"))
+        controller.load(listOf(QueueEntry(withSubs, "http://p/v1.mp4", "http://p/media/v1/subtitle.srt")), 0, 0, opts())
+        val body = tv.calls.first { it.action == "SetAVTransportURI" }.body
+        assertTrue(body.contains("sec:CaptionInfoEx"))
+        assertTrue(body.contains("http://p/media/v1/subtitle.srt"))
+    }
+
+    @Test fun asksTheTvWhichFormatsItAccepts() {
+        val types = DlnaController.supportedTypes(controller.device.dlna!!)
+        assertEquals(setOf("video/mp4", "video/x-matroska", "audio/mpeg", "image/jpeg"), types)
     }
 }

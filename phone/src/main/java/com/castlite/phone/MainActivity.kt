@@ -3,7 +3,10 @@ package com.castlite.phone
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.content.Intent
 import android.os.Bundle
+import androidx.activity.viewModels
+import com.castlite.phone.ui.MainViewModel
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -15,6 +18,8 @@ import com.castlite.phone.ui.theme.CastLiteTheme
 
 class MainActivity : ComponentActivity() {
 
+    private val vm: MainViewModel by viewModels()
+
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* optional either way */ }
 
@@ -25,11 +30,19 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         askForNotificationPermission()
+        // Files or links shared to CastLite / "Open with CastLite".
+        if (savedInstanceState == null) vm.handleIncoming(intent)
+        vm.pruneMissing()
         setContent {
             CastLiteTheme {
                 CastLiteRoot()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        vm.handleIncoming(intent)
     }
 
     override fun onStart() {

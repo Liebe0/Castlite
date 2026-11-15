@@ -66,6 +66,10 @@ class FakeRenderer : NanoHTTPD(0) {
             "GetTransportInfo" -> mapOf("CurrentTransportState" to transportState, "CurrentTransportStatus" to "OK", "CurrentSpeed" to "1")
             "GetPositionInfo" -> mapOf("Track" to "1", "TrackDuration" to duration, "RelTime" to relTime, "AbsTime" to relTime)
             "GetVolume" -> mapOf("CurrentVolume" to volume.toString())
+            "GetProtocolInfo" -> mapOf(
+                "Source" to "",
+                "Sink" to "http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC,http-get:*:video/x-matroska:*,http-get:*:audio/mpeg:*,http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG",
+            )
             "SetVolume" -> {
                 volume = Regex("<DesiredVolume>(\\d+)</DesiredVolume>").find(body)!!.groupValues[1].toInt()
                 emptyMap()

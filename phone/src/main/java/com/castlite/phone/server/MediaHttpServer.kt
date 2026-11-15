@@ -22,6 +22,8 @@ import java.util.logging.Logger
 class MediaHttpServer(
     private val opener: MediaOpener,
     port: Int,
+    /** Opens a subtitle file (content:// URI string); null if unreadable. */
+    private val openSubtitle: (String) -> InputStream? = { null },
 ) : NanoHTTPD(port) {
 
     init {
@@ -62,9 +64,9 @@ class MediaHttpServer(
             path == "/" || path == "/index.html" -> indexPage()
             path.startsWith("/media/") -> {
                 val id = path.removePrefix("/media/").substringBefore('/')
-                val media = MediaLibrary.find(id)
+                val media = MediaLibrary.find(id)?.takeIf { !it.isRemote }
                     ?: return text(Response.Status.NOT_FOUND, "This file is no longer shared")
-                serveMedia(session, media)
+                if (path == media.subtitlePath) serveSubtitle(media) else serveMedia(session, media)
             }
             else -> text(Response.Status.NOT_FOUND, "Not found")
         }
@@ -108,9 +110,24 @@ class MediaHttpServer(
         response.addHeader("contentFeatures.dlna.org", Dlna.contentFeatures(media.kind, seekable))
         response.addHeader("Access-Control-Allow-Origin", "*")
         response.addHeader("Cache-Control", "no-cache")
+        // Samsung/LG-style DLNA renderers look here for external subtitles.
+        media.subtitlePath?.let { sub ->
+            session.headers["host"]?.let { host -> response.addHeader("CaptionInfo.sec", "http://$host$sub") }
+        }
         // Lets browsers show the real name when downloading; inline so they play it.
         response.addHeader("Content-Disposition", "inline; filename=\"${media.fileName}\"")
         return response
+    }
+
+    /** Subtitles are small: read them fully and send with the right type. */
+    private fun serveSubtitle(media: CastMedia): Response {
+        val sub = media.subtitle ?: return text(Response.Status.NOT_FOUND, "No subtitles")
+        val bytes = openSubtitle(sub.contentUri)?.use { it.readBytes() }
+            ?: return text(Response.Status.NOT_FOUND, "Subtitle file is gone. Add it again.")
+        val mime = if (sub.extension == "vtt") "text/vtt; charset=utf-8" else "application/x-subrip; charset=utf-8"
+        return newFixedLengthResponse(Response.Status.OK, mime, bytes.inputStream(), bytes.size.toLong()).also {
+            it.addHeader("Access-Control-Allow-Origin", "*")
+        }
     }
 
     private fun unreadable(media: CastMedia): Response = text(

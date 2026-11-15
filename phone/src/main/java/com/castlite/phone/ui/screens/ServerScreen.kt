@@ -56,6 +56,7 @@ data class ServerActions(
     val open: (String) -> Unit = {},
     val allowBackground: () -> Unit = {},
     val checkForUpdates: () -> Unit = {},
+    val sendDiagnostics: () -> Unit = {},
 )
 
 /** Diagnostics: the phone's media server, its address, and what TVs have requested. */
@@ -143,6 +144,19 @@ fun ServerScreen(state: MainUiState, actions: ServerActions) {
                 }
             }
             item { UpdatesCard(state, actions.checkForUpdates) }
+            item {
+                AppCard(Modifier.fillMaxWidth()) {
+                    Text("Something not working?", style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Send a diagnostics report: what the phone and the TV did, the TV's supported formats and recent errors. No photos or videos are included.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextSecondary,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    GradientButton("Send diagnostics", actions.sendDiagnostics, modifier = Modifier.fillMaxWidth())
+                }
+            }
             if (state.media.isNotEmpty() && state.baseUrl != null) {
                 item { SectionHeader("File URLs") }
                 items(state.media, key = { "u" + it.id }) { m ->

@@ -24,6 +24,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.remember
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Tv
@@ -73,10 +79,15 @@ data class DevicesActions(
     val dismissManualEntry: () -> Unit = {},
     val addByIp: (String) -> Unit = {},
     val removeManual: (CastDevice) -> Unit = {},
+    val toggleExtra: (CastDevice) -> Unit = {},
+    /** Returns an error message, or null when saved. */
+    val saveMac: (CastDevice, String) -> String? = { _, _ -> null },
+    val wake: (CastDevice) -> Unit = {},
 )
 
 @Composable
 fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
+    var powerFor by remember { mutableStateOf<CastDevice?>(null) }
     Box(Modifier.fillMaxSize().background(Palette.Background)) {
         LazyColumn(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
@@ -109,12 +120,27 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
                     DeviceRow(
                         device = device,
                         selected = device.id == state.selectedId,
+                        alsoPlaying = device.id in state.extraIds,
+                        canPlayAlong = state.selectedId != null && device.id != state.selectedId,
+                        hasMac = state.macs.containsKey(device.id),
                         onClick = { actions.select(device) },
+                        onToggleExtra = { actions.toggleExtra(device) },
+                        onPower = { powerFor = device },
                         onRemove = if (device.isManual) ({ actions.removeManual(device) }) else null,
                     )
                 }
             }
 
+            if (state.devices.size > 1 && state.selectedId != null) {
+                item {
+                    Text(
+                        "Tip: tap + on another TV to play the same thing there too.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextTertiary,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                }
+            }
             if (state.devices.isEmpty()) item { Tips() }
 
             item {
@@ -128,6 +154,16 @@ fun DevicesScreen(state: DevicesUiState, actions: DevicesActions) {
                     Text("Enter TV IP address", color = Palette.TextPrimary)
                 }
             }
+        }
+
+        powerFor?.let { device ->
+            PowerDialog(
+                device = device,
+                currentMac = state.macs[device.id],
+                onSave = { text -> actions.saveMac(device, text).also { if (it == null) powerFor = null } },
+                onWake = { actions.wake(device); powerFor = null },
+                onDismiss = { powerFor = null },
+            )
         }
 
         when (val m = state.manual) {
@@ -177,18 +213,28 @@ private fun ScanHeader(state: DevicesUiState) {
 }
 
 @Composable
-private fun DeviceRow(device: CastDevice, selected: Boolean, onClick: () -> Unit, onRemove: (() -> Unit)?) {
+private fun DeviceRow(
+    device: CastDevice,
+    selected: Boolean,
+    alsoPlaying: Boolean,
+    canPlayAlong: Boolean,
+    hasMac: Boolean,
+    onClick: () -> Unit,
+    onToggleExtra: () -> Unit,
+    onPower: () -> Unit,
+    onRemove: (() -> Unit)?,
+) {
     AppCard(
         modifier = Modifier.fillMaxWidth(),
         onClick = onClick,
-        color = if (selected) Palette.SurfaceHigh else Palette.Surface,
-        border = if (selected) {
-            BorderStroke(1.dp, Brush.linearGradient(listOf(Palette.Cyan, Palette.Violet)))
-        } else {
-            BorderStroke(1.dp, Palette.Outline)
+        color = if (selected || alsoPlaying) Palette.SurfaceHigh else Palette.Surface,
+        border = when {
+            selected -> BorderStroke(1.dp, Brush.linearGradient(listOf(Palette.Cyan, Palette.Violet)))
+            alsoPlaying -> BorderStroke(1.dp, Palette.Cyan.copy(alpha = 0.4f))
+            else -> BorderStroke(1.dp, Palette.Outline)
         },
         shape = MaterialTheme.shapes.medium,
-        contentPadding = PaddingValues(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+        contentPadding = PaddingValues(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 0.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconDisc(Icons.Filled.Tv, device.protocol.color)
@@ -199,17 +245,92 @@ private fun DeviceRow(device: CastDevice, selected: Boolean, onClick: () -> Unit
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     ProtocolBadge(device.protocol)
                     Spacer(Modifier.width(8.dp))
-                    Text(device.details, style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        when {
+                            alsoPlaying -> "Also plays here"
+                            else -> device.details
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (alsoPlaying) Palette.Cyan else Palette.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             if (selected) {
-                Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = Palette.Cyan, modifier = Modifier.padding(horizontal = 8.dp))
+                Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = Palette.Cyan, modifier = Modifier.padding(horizontal = 4.dp))
+            } else if (canPlayAlong) {
+                IconButton(onClick = onToggleExtra) {
+                    Icon(
+                        if (alsoPlaying) Icons.Filled.CheckCircle else Icons.Filled.AddCircleOutline,
+                        contentDescription = if (alsoPlaying) "Stop playing here too" else "Also play here",
+                        tint = if (alsoPlaying) Palette.Cyan else Palette.TextTertiary,
+                    )
+                }
             }
-            if (onRemove != null) {
-                IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, contentDescription = "Forget", tint = Palette.TextTertiary) }
+            var menu by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.TextTertiary) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (hasMac) "Power on (Wake-on-LAN)" else "Set up power on") },
+                        leadingIcon = { Icon(Icons.Filled.PowerSettingsNew, null) },
+                        onClick = { menu = false; onPower() },
+                    )
+                    if (onRemove != null) {
+                        DropdownMenuItem(text = { Text("Forget this TV") }, leadingIcon = { Icon(Icons.Filled.Close, null) }, onClick = { menu = false; onRemove() })
+                    }
+                }
             }
         }
     }
+}
+
+/** Saves a TV's MAC address and switches it on with Wake-on-LAN. */
+@Composable
+private fun PowerDialog(device: CastDevice, currentMac: String?, onSave: (String) -> String?, onWake: () -> Unit, onDismiss: () -> Unit) {
+    var text by rememberSaveable { mutableStateOf(currentMac.orEmpty()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.SurfaceHigh,
+        title = { Text("Turn on ${device.name}") },
+        text = {
+            Column {
+                Text(
+                    "CastLite can switch the TV on over Wi-Fi. Enter its MAC address once — find it on the TV under " +
+                        "Settings → Network (LG: Network → Wi-Fi → Advanced). Also turn on \"Turn on via Wi-Fi\" (LG) or " +
+                        "\"Network standby\" (Android TV).",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Palette.TextSecondary,
+                )
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.trim(); error = null },
+                    placeholder = { Text("A1:B2:C3:D4:E5:F6") },
+                    singleLine = true,
+                    isError = error != null,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Palette.Cyan, cursorColor = Palette.Cyan),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = Palette.Error, style = MaterialTheme.typography.bodySmall)
+                }
+                if (currentMac != null) {
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = onWake, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, tint = Palette.Cyan)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Turn on now", color = Palette.TextPrimary)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { error = onSave(text) }) { Text("Save", color = Palette.Cyan) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = Palette.TextSecondary) } },
+    )
 }
 
 @Composable

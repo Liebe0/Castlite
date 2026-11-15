@@ -37,5 +37,10 @@ object ServerMonitor {
         _state.value = state
     }
 
-    fun record(entry: RequestLogEntry) = _requests.update { (listOf(entry) + it).take(MAX_LOG) }
+    fun record(entry: RequestLogEntry) {
+        _requests.update { (listOf(entry) + it).take(MAX_LOG) }
+        com.castlite.phone.diagnostics.Diag.log(
+            "http", "${entry.client} ${entry.method} ${entry.path} ${entry.range ?: ""} → ${entry.status} (${entry.userAgent ?: "?"})",
+        )
+    }
 }

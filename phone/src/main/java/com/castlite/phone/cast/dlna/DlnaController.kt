@@ -6,7 +6,12 @@ import com.castlite.phone.cast.CastException
 import com.castlite.phone.cast.PlaybackStatus
 import com.castlite.phone.cast.PlayerState
 import com.castlite.phone.cast.QueueEntry
+import com.castlite.phone.cast.CastOptions
+import com.castlite.phone.cast.DlnaEndpoints
+import com.castlite.phone.diagnostics.Diag
+import com.castlite.phone.media.Compatibility
 import com.castlite.phone.media.MediaKind
+import com.castlite.protocol.RepeatMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -64,15 +69,19 @@ class DlnaController(
     private var failures = 0
     private var polls = 0
     private var lastPlayingPositionMs = 0L // last position seen while PLAYING (0 = TV never reported one)
+    private var repeat = RepeatMode.OFF
+    private var lastTransportState = ""
 
     private var pollJob: Job? = null
     private var slideJob: Job? = null
 
-    override suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, slideDurationMs: Long): Unit =
+    override suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, options: CastOptions): Unit =
         onSerial {
             require(queue.isNotEmpty()) { "Nothing to cast" }
             this.queue = queue
-            this.slideDurationMs = slideDurationMs
+            this.slideDurationMs = options.slideshow.durationMs
+            repeat = options.repeat
+            _status.update { it.copy(repeat = repeat) }
             loadIndex(startIndex.coerceIn(queue.indices), startPositionMs)
             startPolling()
         }
@@ -121,8 +130,20 @@ class DlnaController(
     }
 
     override suspend fun next(): Unit = onSerial {
-        if (index + 1 >= queue.size) throw CastException("This is the last item")
-        loadIndex(index + 1, 0)
+        when {
+            index + 1 < queue.size -> loadIndex(index + 1, 0)
+            repeat == RepeatMode.ALL -> loadIndex(0, 0)
+            else -> throw CastException("This is the last item")
+        }
+    }
+
+    override suspend fun setRepeat(mode: RepeatMode): Unit = onSerial {
+        repeat = mode
+        _status.update { it.copy(repeat = mode) }
+    }
+
+    override suspend fun setSubtitles(enabled: Boolean) {
+        throw CastException("Subtitles can't be switched over DLNA — use the TV's remote")
     }
 
     override suspend fun previous(): Unit = onSerial {
@@ -167,7 +188,8 @@ class DlnaController(
         runCatching { avTransport("Stop") }
 
         val media = entry.media
-        val metadata = Didl.build(media.displayName, entry.url, media.mimeType, media.kind, media.sizeBytes, media.durationMs)
+        val metadata = Didl.build(media.displayName, entry.url, media.mimeType, media.kind, media.sizeBytes, media.durationMs, entry.subtitleUrl)
+        Diag.log("dlna", "${device.name}: load #$i ${media.displayName} (${media.mimeType}) ${entry.url}")
         avTransport("SetAVTransportURI", "CurrentURI" to entry.url, "CurrentURIMetaData" to metadata)
         playWithRetry()
 
@@ -209,10 +231,11 @@ class DlnaController(
     }
 
     private suspend fun advanceOrEnd() {
-        if (index + 1 < queue.size) {
-            loadIndex(index + 1, 0)
-        } else {
-            _status.update { it.copy(state = PlayerState.ENDED) }
+        when {
+            repeat == RepeatMode.ONE -> loadIndex(index, 0)
+            index + 1 < queue.size -> loadIndex(index + 1, 0)
+            repeat == RepeatMode.ALL -> loadIndex(0, 0)
+            else -> _status.update { it.copy(state = PlayerState.ENDED) }
         }
     }
 
@@ -240,6 +263,10 @@ class DlnaController(
         val entry = current() ?: return
         val transport = avTransport("GetTransportInfo")
         val state = transport["CurrentTransportState"].orEmpty()
+        if (state != lastTransportState) {
+            Diag.log("dlna", "${device.name}: transport $lastTransportState → $state")
+            lastTransportState = state
+        }
         val isImage = entry.media.kind == MediaKind.IMAGE
 
         if (!isImage) {
@@ -312,8 +339,10 @@ class DlnaController(
             try {
                 soap.call(url, service, action, args.toList())
             } catch (e: UpnpException) {
+                Diag.log("dlna", "${device.name}: $action failed: UPnP ${e.code} ${e.description}")
                 throw CastException(describe(action, e), e)
             } catch (e: ConnectException) {
+                Diag.log("dlna", "${device.name}: $action: can't connect (${e.message})")
                 throw CastException("Can't reach ${device.name}. Is it switched on and on the same Wi-Fi?", e)
             } catch (e: SocketTimeoutException) {
                 throw CastException("${device.name} isn't responding.", e)
@@ -342,6 +371,23 @@ class DlnaController(
     private suspend fun <T> onSerial(block: suspend () -> T): T = withContext(serial) { block() }
 
     companion object {
+        /**
+         * Asks a DLNA TV which file types it accepts (ConnectionManager GetProtocolInfo
+         * "Sink" list). Blocking; returns null if the TV doesn't say.
+         */
+        fun supportedTypes(endpoints: DlnaEndpoints, soap: SoapClient = SoapClient()): Set<String>? {
+            val url = endpoints.connectionManagerUrl ?: return null
+            return try {
+                val reply = soap.call(url, CONNECTION_MANAGER, "GetProtocolInfo", emptyList())
+                Compatibility.parseSinkProtocolInfo(reply["Sink"].orEmpty()).takeIf { it.isNotEmpty() }
+            } catch (e: Exception) {
+                Diag.log("dlna", "GetProtocolInfo failed: ${e.message}")
+                null
+            }
+        }
+
+        const val CONNECTION_MANAGER = "urn:schemas-upnp-org:service:ConnectionManager:1"
+
         /** Stopping within this much of the end counts as "finished". */
         private const val END_TOLERANCE_MS = 15_000L
         const val AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"

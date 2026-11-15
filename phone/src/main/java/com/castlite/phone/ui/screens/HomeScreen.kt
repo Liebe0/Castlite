@@ -31,6 +31,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.ClosedCaptionDisabled
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.castlite.phone.mirror.MirrorUiState
+import com.castlite.protocol.RepeatMode as Repeat
+import com.castlite.protocol.SlideshowOptions
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bedtime
@@ -90,6 +105,8 @@ import com.castlite.updater.UpdateState
 /** Callbacks of the home screen, grouped so previews and tests can pass no-ops. */
 data class HomeActions(
     val pickMedia: () -> Unit = {},
+    val pickFolder: () -> Unit = {},
+    val addLink: (String) -> Unit = {},
     val chooseDevice: () -> Unit = {},
     val cast: (index: Int) -> Unit = {},
     val openPlayer: () -> Unit = {},
@@ -97,19 +114,31 @@ data class HomeActions(
     val remove: (CastMedia) -> Unit = {},
     val move: (CastMedia, Int) -> Unit = { _, _ -> },
     val clear: () -> Unit = {},
-    val setSlideDuration: (Long) -> Unit = {},
+    val shuffle: () -> Unit = {},
+    val cycleRepeat: () -> Unit = {},
+    val setSlideshow: (SlideshowOptions) -> Unit = {},
+    val pickSubtitle: (CastMedia) -> Unit = {},
+    val removeSubtitle: (CastMedia) -> Unit = {},
     val togglePlayPause: () -> Unit = {},
     val allowBackground: () -> Unit = {},
     val dismissBackgroundPrompt: () -> Unit = {},
     val installUpdate: () -> Unit = {},
     val allowUpdates: () -> Unit = {},
+    val mirror: () -> Unit = {},
+    val stopMirror: () -> Unit = {},
+    val wakeTv: () -> Unit = {},
+    val answerResume: (Boolean) -> Unit = {},
+    val dismissResume: () -> Unit = {},
 )
-
-private val SLIDE_OPTIONS = listOf(3_000L, 5_000L, 8_000L, 15_000L)
 
 @Composable
 fun HomeScreen(state: MainUiState, actions: HomeActions) {
     val session = state.session
+    var addMenu by remember { mutableStateOf(false) }
+    var linkDialog by remember { mutableStateOf(false) }
+    var slideshowDialog by remember { mutableStateOf(false) }
+    val hasPhotos = state.media.any { it.kind == MediaKind.IMAGE }
+
     Box(Modifier.fillMaxSize().background(Palette.Background)) {
         // Soft coloured glow at the top of the screen.
         Box(
@@ -137,7 +166,10 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
                 item { UpdateBanner(banner, actions) }
             }
 
-            item { DeviceCard(state.selectedDevice, actions.chooseDevice) }
+            item { DeviceCard(state, actions) }
+
+            (state.mirror as? MirrorUiState.Active)?.let { m -> item { MirrorBanner("Mirroring to ${m.tv}" + if (m.withAudio) " · with sound" else "", actions.stopMirror) } }
+            (state.mirror as? MirrorUiState.Starting)?.let { m -> item { MirrorBanner("Connecting to ${m.tv}…", actions.stopMirror) } }
 
             if (state.showBackgroundPrompt) {
                 item { BackgroundPrompt(state.power.backgroundRestricted, actions.allowBackground, actions.dismissBackgroundPrompt) }
@@ -145,14 +177,39 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
 
             item {
                 SectionHeader(if (state.media.isEmpty()) "Queue" else "Queue · ${state.media.size}") {
-                    if (state.media.any { it.kind == MediaKind.IMAGE }) {
-                        SlideshowChip(state.slideDurationMs, actions.setSlideDuration)
-                        Spacer(Modifier.width(4.dp))
-                    }
                     if (state.media.isNotEmpty()) {
-                        IconButton(onClick = actions.pickMedia) {
-                            Icon(Icons.Filled.Add, contentDescription = "Add media", tint = Palette.Cyan)
+                        if (hasPhotos) {
+                            SmallChip(Icons.Filled.Slideshow, "${state.slideshow.durationMs / 1000}s") { slideshowDialog = true }
+                            Spacer(Modifier.width(6.dp))
                         }
+                        IconButton(onClick = actions.cycleRepeat) {
+                            Icon(
+                                if (state.repeat == Repeat.ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                                contentDescription = "Repeat: ${state.repeat.name.lowercase()}",
+                                tint = if (state.repeat == Repeat.OFF) Palette.TextTertiary else Palette.Cyan,
+                            )
+                        }
+                        if (state.media.size > 1) {
+                            IconButton(onClick = actions.shuffle) {
+                                Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle", tint = Palette.TextSecondary)
+                            }
+                        }
+                        Box {
+                            IconButton(onClick = { addMenu = true }) {
+                                Icon(Icons.Filled.Add, contentDescription = "Add", tint = Palette.Cyan)
+                            }
+                            AddMenu(addMenu, onDismiss = { addMenu = false }, actions.pickMedia, actions.pickFolder) { linkDialog = true }
+                        }
+                    }
+                }
+            }
+
+            state.busy?.let { text ->
+                item {
+                    Column {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().clip(RoundedCornerShape(2.dp)), color = Palette.Cyan, trackColor = Palette.SurfaceHighest)
+                        Spacer(Modifier.height(6.dp))
+                        Text(text, style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary)
                     }
                 }
             }
@@ -163,10 +220,15 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
                         EmptyState(
                             icon = Icons.Filled.VideoLibrary,
                             title = "Pick something to cast",
-                            body = "Videos, photos and music from your phone. Pick several to play them as a queue or a slideshow.",
+                            body = "Videos, photos and music from your phone, a whole folder, or a web link. You can also share files to CastLite from any app.",
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             GradientButton("Add media", actions.pickMedia, icon = Icons.Filled.Add)
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SmallChip(Icons.Filled.Folder, "Folder", onClick = actions.pickFolder)
+                                SmallChip(Icons.Filled.Link, "Web link") { linkDialog = true }
+                            }
                         }
                     }
                 }
@@ -179,9 +241,12 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
                         isPlaying = isCurrent && session?.status?.state == PlayerState.PLAYING,
                         isFirst = index == 0,
                         isLast = index == state.media.lastIndex,
+                        warning = state.compatibility(item).summary,
                         onClick = { if (state.selectedDevice == null) actions.chooseDevice() else actions.cast(index) },
                         onRemove = { actions.remove(item) },
                         onMove = { actions.move(item, it) },
+                        onAddSubtitle = { actions.pickSubtitle(item) },
+                        onRemoveSubtitle = { actions.removeSubtitle(item) },
                     )
                 }
                 item {
@@ -206,7 +271,8 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
             when {
                 session != null -> MiniPlayer(state, actions.openPlayer, actions.togglePlayPause)
                 state.media.isNotEmpty() -> GradientButton(
-                    text = if (state.selectedDevice == null) "Choose a TV to cast to" else "Cast ${countLabel(state.media)} to ${state.selectedDevice.name}",
+                    text = if (state.selectedDevice == null) "Choose a TV to cast to" else "Cast ${countLabel(state.media)} to ${state.selectedDevice.name}" +
+                        if (state.extraDevices.isNotEmpty()) " + ${state.extraDevices.size}" else "",
                     onClick = { if (state.selectedDevice == null) actions.chooseDevice() else actions.cast(0) },
                     icon = Icons.Filled.Cast,
                     modifier = Modifier.fillMaxWidth(),
@@ -214,6 +280,10 @@ fun HomeScreen(state: MainUiState, actions: HomeActions) {
             }
         }
     }
+
+    if (linkDialog) LinkDialog(onAdd = { actions.addLink(it); linkDialog = false }, onDismiss = { linkDialog = false })
+    if (slideshowDialog) SlideshowDialog(state.slideshow, onChange = actions.setSlideshow, onDismiss = { slideshowDialog = false })
+    state.resumePrompt?.let { ResumeDialog(it, actions.answerResume, actions.dismissResume) }
 }
 
 private fun countLabel(media: List<CastMedia>) = if (media.size == 1) "1 item" else "${media.size} items"
@@ -256,10 +326,11 @@ private fun Header(state: MainUiState, onOpenServer: () -> Unit) {
 }
 
 @Composable
-private fun DeviceCard(device: CastDevice?, onClick: () -> Unit) {
+private fun DeviceCard(state: MainUiState, actions: HomeActions) {
+    val device = state.selectedDevice
     AppCard(
         modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
+        onClick = actions.chooseDevice,
         border = if (device != null) BorderStroke(1.dp, Brush.linearGradient(listOf(Palette.Cyan.copy(alpha = 0.6f), Palette.Violet.copy(alpha = 0.6f)))) else BorderStroke(1.dp, Palette.Outline),
         color = Palette.Surface,
         contentPadding = PaddingValues(16.dp),
@@ -275,7 +346,7 @@ private fun DeviceCard(device: CastDevice?, onClick: () -> Unit) {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    device?.name ?: "Choose a TV",
+                    device?.name?.let { if (state.extraDevices.isEmpty()) it else "$it + ${state.extraDevices.size} more" } ?: "Choose a TV",
                     style = MaterialTheme.typography.titleMedium,
                     color = Palette.TextPrimary,
                     maxLines = 1,
@@ -294,6 +365,54 @@ private fun DeviceCard(device: CastDevice?, onClick: () -> Unit) {
             }
             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Change TV", tint = Palette.TextTertiary)
         }
+        if (device != null) {
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.mirror is MirrorUiState.Idle) SmallChip(Icons.Filled.ScreenShare, "Mirror screen", onClick = actions.mirror)
+                if (state.selectedMac != null) SmallChip(Icons.Filled.PowerSettingsNew, "Turn on TV", onClick = actions.wakeTv)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MirrorBanner(text: String, onStop: () -> Unit) {
+    AppCard(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, Palette.Cyan.copy(alpha = 0.5f))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconDisc(Icons.Filled.ScreenShare, Palette.Cyan, size = 44.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(text, style = MaterialTheme.typography.titleSmall, color = Palette.TextPrimary)
+                Text("Everything on this screen shows on the TV", style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary)
+            }
+            TextButton(onClick = onStop) { Text("Stop", color = Palette.Error) }
+        }
+    }
+}
+
+/** Small rounded chip with an icon (queue tools, quick actions). */
+@Composable
+fun SmallChip(icon: ImageVector, text: String, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(Palette.Surface)
+            .border(1.dp, Palette.Outline, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = Palette.Cyan, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = MaterialTheme.typography.labelMedium, color = Palette.TextPrimary)
+    }
+}
+
+@Composable
+private fun AddMenu(expanded: Boolean, onDismiss: () -> Unit, onFiles: () -> Unit, onFolder: () -> Unit, onLink: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(text = { Text("Videos, photos, music") }, leadingIcon = { Icon(Icons.Filled.VideoLibrary, null) }, onClick = { onDismiss(); onFiles() })
+        DropdownMenuItem(text = { Text("A whole folder") }, leadingIcon = { Icon(Icons.Filled.Folder, null) }, onClick = { onDismiss(); onFolder() })
+        DropdownMenuItem(text = { Text("Web link") }, leadingIcon = { Icon(Icons.Filled.Link, null) }, onClick = { onDismiss(); onLink() })
     }
 }
 
@@ -406,42 +525,18 @@ private fun BackgroundPrompt(restricted: Boolean, onAllow: () -> Unit, onDismiss
 }
 
 @Composable
-private fun SlideshowChip(current: Long, onChange: (Long) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            Modifier.clip(RoundedCornerShape(50))
-                .background(Palette.Surface)
-                .border(1.dp, Palette.Outline, RoundedCornerShape(50))
-                .clickable { open = true }
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.Slideshow, contentDescription = null, tint = Palette.TextSecondary, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("${current / 1000}s / photo", style = MaterialTheme.typography.labelMedium, color = Palette.TextSecondary)
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            SLIDE_OPTIONS.forEach { ms ->
-                DropdownMenuItem(
-                    text = { Text("${ms / 1000} seconds per photo") },
-                    onClick = { onChange(ms); open = false },
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun QueueRow(
     item: CastMedia,
     isCurrent: Boolean,
     isPlaying: Boolean,
     isFirst: Boolean,
     isLast: Boolean,
+    warning: String?,
     onClick: () -> Unit,
     onRemove: () -> Unit,
     onMove: (Int) -> Unit,
+    onAddSubtitle: () -> Unit,
+    onRemoveSubtitle: () -> Unit,
 ) {
     AppCard(
         modifier = Modifier.fillMaxWidth(),
@@ -463,12 +558,31 @@ private fun QueueRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
-                val parts = buildList {
-                    add(item.kind.label())
-                    if (item.durationMs > 0) add(formatDuration(item.durationMs))
-                    if (item.sizeBytes >= 0) add(formatSize(item.sizeBytes))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (item.subtitle != null) {
+                        Tag("CC")
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    if (item.isRemote) {
+                        Tag("WEB")
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    val parts = buildList {
+                        add(item.kind.label())
+                        if (item.durationMs > 0) add(formatDuration(item.durationMs))
+                        item.info?.takeIf { it.height > 0 }?.let { add("${minOf(it.width, it.height)}p") }
+                        if (item.sizeBytes >= 0) add(formatSize(item.sizeBytes))
+                    }
+                    Text(parts.joinToString("  ·  "), style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary, maxLines = 1)
                 }
-                Text(parts.joinToString("  ·  "), style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary)
+                if (warning != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Palette.Warning, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("May not play: $warning", style = MaterialTheme.typography.labelSmall, color = Palette.Warning, maxLines = 2)
+                    }
+                }
             }
             if (isCurrent) Equalizer(animate = isPlaying)
             var menu by remember { mutableStateOf(false) }
@@ -478,6 +592,13 @@ private fun QueueRow(
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text("Play from here") }, leadingIcon = { Icon(Icons.Filled.PlayArrow, null) }, onClick = { menu = false; onClick() })
+                    if (item.kind == MediaKind.VIDEO && !item.isRemote) {
+                        if (item.subtitle == null) {
+                            DropdownMenuItem(text = { Text("Add subtitles (.srt/.vtt)") }, leadingIcon = { Icon(Icons.Filled.ClosedCaption, null) }, onClick = { menu = false; onAddSubtitle() })
+                        } else {
+                            DropdownMenuItem(text = { Text("Remove subtitles") }, leadingIcon = { Icon(Icons.Filled.ClosedCaptionDisabled, null) }, onClick = { menu = false; onRemoveSubtitle() })
+                        }
+                    }
                     if (!isFirst) DropdownMenuItem(text = { Text("Move up") }, leadingIcon = { Icon(Icons.Filled.ArrowUpward, null) }, onClick = { menu = false; onMove(-1) })
                     if (!isLast) DropdownMenuItem(text = { Text("Move down") }, leadingIcon = { Icon(Icons.Filled.ArrowDownward, null) }, onClick = { menu = false; onMove(1) })
                     DropdownMenuItem(text = { Text("Remove") }, leadingIcon = { Icon(Icons.Filled.DeleteOutline, null) }, onClick = { menu = false; onRemove() })
@@ -485,6 +606,13 @@ private fun QueueRow(
             }
         }
     }
+}
+
+@Composable
+private fun Tag(text: String) {
+    Box(
+        Modifier.clip(RoundedCornerShape(4.dp)).background(Palette.SurfaceHighest).padding(horizontal = 5.dp, vertical = 1.dp),
+    ) { Text(text, style = MaterialTheme.typography.labelSmall, color = Palette.TextSecondary) }
 }
 
 /** Three bouncing bars marking the item that's on the TV. */
@@ -532,7 +660,7 @@ private fun MiniPlayer(state: MainUiState, onOpen: () -> Unit, onToggle: () -> U
                         StatusDot(if (session.networkProblem != null) Palette.Error else stateColor(status.state), size = 6.dp)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (session.networkProblem != null) "Waiting for Wi-Fi…" else "${stateLabel(status.state)} on ${session.device.name}",
+                            if (session.networkProblem != null) "Waiting for Wi-Fi…" else "${stateLabel(status.state)} on ${session.devicesLabel}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Palette.TextSecondary,
                             maxLines = 1,

@@ -1,6 +1,9 @@
 package com.castlite.phone.cast.receiver
 
 import com.castlite.phone.cast.CastDevice
+import com.castlite.phone.cast.CastOptions
+import com.castlite.protocol.RepeatMode
+import com.castlite.protocol.SlideshowOptions
 import com.castlite.phone.cast.CastException
 import com.castlite.phone.cast.CastProtocol
 import com.castlite.phone.cast.PlayerState
@@ -68,17 +71,19 @@ class ReceiverCastControllerTest {
     private val song = CastMedia("s", "content://s", "Song.mp3", "Song.mp3", "audio/mpeg", 10, 200_000)
 
     @Test fun loadSendsWholeQueueWithTypes() = runBlocking {
-        controller.load(listOf(QueueEntry(photo, "http://p/1"), QueueEntry(song, "http://p/2")), 1, 0, 8_000)
+        controller.load(listOf(QueueEntry(photo, "http://p/1"), QueueEntry(song, "http://p/2")), 1, 0, CastOptions(RepeatMode.ALL, SlideshowOptions(8_000, music = true)))
         val load = received.first() as Command.Load
         assertEquals(listOf(MediaType.IMAGE, MediaType.AUDIO), load.items.map { it.type })
         assertEquals(1, load.startIndex)
         assertEquals(8_000, load.slideDurationMs)
+        assertEquals(RepeatMode.ALL, load.repeat)
+        assertTrue(load.slideshow!!.music)
         assertEquals(200_000, load.items[1].durationMs)
         assertEquals(PlayerState.PLAYING, controller.status.value.state)
     }
 
     @Test fun commandsAndPolling() = runBlocking {
-        controller.load(listOf(QueueEntry(photo, "u1"), QueueEntry(song, "u2")), 0, 0, 5_000)
+        controller.load(listOf(QueueEntry(photo, "u1"), QueueEntry(song, "u2")), 0, 0, CastOptions())
         controller.pause()
         assertEquals(PlayerState.PAUSED, controller.status.value.state)
         controller.setVolume(150)
@@ -89,7 +94,7 @@ class ReceiverCastControllerTest {
     }
 
     @Test fun tvErrorsBecomeCastExceptions() = runBlocking {
-        controller.load(listOf(QueueEntry(photo, "u1")), 0, 0, 5_000)
+        controller.load(listOf(QueueEntry(photo, "u1")), 0, 0, CastOptions())
         try {
             controller.next()
             fail("expected error")
@@ -99,7 +104,7 @@ class ReceiverCastControllerTest {
     }
 
     @Test fun lostConnectionIsReported() {
-        runBlocking { controller.load(listOf(QueueEntry(song, "u")), 0, 0, 5_000) }
+        runBlocking { controller.load(listOf(QueueEntry(song, "u")), 0, 0, CastOptions()) }
         server.stop()
         val s = runBlocking { withTimeout(10_000) { controller.status.first { it.state == PlayerState.ERROR } } }
         assertTrue(s.error!!.contains("Lost connection to Bedroom TV"))

@@ -103,3 +103,64 @@ class ProtocolTest {
         assertEquals(400, conn.responseCode)
     }
 }
+
+class ProtocolV2Test {
+    private val json = ReceiverProtocol.json
+
+    @Test fun newCommandsAndFields() {
+        assertEquals("""{"action":"repeat","mode":"ALL"}""", json.encodeToString(Command.serializer(), Command.SetRepeat(RepeatMode.ALL)))
+        assertEquals("""{"action":"subtitles","enabled":false}""", json.encodeToString(Command.serializer(), Command.SetSubtitles(false)))
+        val load = Command.Load(
+            listOf(QueueItem("u", "t", "video/mp4", MediaType.VIDEO, subtitleUrl = "s", subtitleMimeType = "text/vtt")),
+            repeat = RepeatMode.ONE,
+            slideshow = SlideshowOptions(3_000, SlideTransition.ZOOM, kenBurns = false, music = true),
+        )
+        assertEquals(load, json.decodeFromString(Command.serializer(), json.encodeToString(Command.serializer(), load)))
+    }
+
+    @Test fun oldPhoneLoadStillParses() {
+        // A v1 phone sends no repeat/slideshow: defaults apply.
+        val load = json.decodeFromString(Command.serializer(), """{"action":"load","items":[],"slideDurationMs":8000}""") as Command.Load
+        assertEquals(RepeatMode.OFF, load.repeat)
+        assertEquals(null, load.slideshow)
+        assertEquals(8000, load.slideDurationMs)
+    }
+
+    @Test fun infoWithCapabilities() {
+        val info = ReceiverInfo("TV", "m", "1", capabilities = Capabilities(listOf("video/avc", "video/hevc"), listOf("audio/ac3"), true, 2160), mirrorPort = 8767)
+        assertEquals(info, json.decodeFromString(ReceiverInfo.serializer(), json.encodeToString(ReceiverInfo.serializer(), info)))
+    }
+
+    @Test fun mirrorFramesRoundTrip() {
+        val buf = java.io.ByteArrayOutputStream()
+        MirrorProtocol.writeHeader(buf)
+        val w = MirrorWriter(buf)
+        val csd = byteArrayOf(0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3)
+        w.write(MirrorProtocol.TYPE_VIDEO_CONFIG, 0, MirrorProtocol.videoConfigPayload(1280, 720, csd))
+        val frame = ByteArray(5000) { it.toByte() }
+        w.write(MirrorProtocol.TYPE_VIDEO_FRAME, 33_333, frame, 100, 4000, MirrorProtocol.FLAG_KEYFRAME)
+        w.write(MirrorProtocol.TYPE_AUDIO_CONFIG, 0, MirrorProtocol.audioConfigPayload(48_000, 2))
+
+        val input = java.io.ByteArrayInputStream(buf.toByteArray())
+        MirrorProtocol.readHeader(input)
+        val r = MirrorReader(input)
+        val config = r.next()!!
+        assertEquals(1280 to 720, config.configInts())
+        assertTrue(config.videoCsd().contentEquals(csd))
+        val f = r.next()!!
+        assertTrue(f.isKeyframe)
+        assertEquals(33_333, f.ptsUs)
+        assertTrue(f.data.contentEquals(frame.copyOfRange(100, 4100)))
+        assertEquals(48_000 to 2, r.next()!!.configInts())
+        assertEquals(null, r.next()) // clean end of stream
+    }
+
+    @Test fun rejectsForeignStreams() {
+        try {
+            MirrorProtocol.readHeader(java.io.ByteArrayInputStream("HTTP/1.1".toByteArray()))
+            fail("expected IOException")
+        } catch (e: java.io.IOException) {
+            assertTrue(e.message!!.contains("Not a CastLite"))
+        }
+    }
+}

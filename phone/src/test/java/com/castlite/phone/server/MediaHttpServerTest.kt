@@ -148,4 +148,24 @@ class MediaHttpServerTest {
         assertEquals("bytes=0-9", last.range)
         assertEquals(video.path, last.path)
     }
+
+    @Test fun servesSubtitlesAndAdvertisesThemToDlnaTvs() {
+        server.stop()
+        val srt = "1\n00:00:01,000 --> 00:00:02,000\nHéllo\n".toByteArray()
+        server = MediaHttpServer({ _, offset -> FileInputStream(file).apply { skipFully(offset) } }, 0) { srt.inputStream() }
+        server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true)
+        val withSubs = video.copy(id = "subbed0000", subtitle = com.castlite.phone.media.SubtitleRef("content://s", "clip.srt", "application/x-subrip"))
+        MediaLibrary.add(listOf(withSubs.copy(contentUri = "content://test/subbed")))
+        val sub = request("/media/subbed0000/subtitle.srt")
+        assertEquals(200, sub.responseCode)
+        assertTrue(sub.contentType.startsWith("application/x-subrip"))
+        assertArrayEquals(srt, sub.body())
+        val v = request("/media/subbed0000/clip.mp4", method = "HEAD")
+        assertTrue(v.getHeaderField("CaptionInfo.sec").endsWith("/media/subbed0000/subtitle.srt"))
+    }
+
+    @Test fun webLinksAreNotServedByThePhone() {
+        MediaLibrary.add(listOf(media("weblink000", "x.mp4", "video/mp4", 10).copy(contentUri = "https://example.com/x.mp4")))
+        assertEquals(404, request("/media/weblink000/x.mp4").responseCode)
+    }
 }

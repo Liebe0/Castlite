@@ -18,7 +18,7 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 </p>
 <p>
 <img src="docs/screenshots/tv_audio.png" width="400" alt="TV: music">
-<img src="docs/screenshots/tv_error.png" width="400" alt="TV: codec error">
+<img src="docs/screenshots/tv_mirror.png" width="400" alt="TV: screen mirroring">
 </p>
 
 *(Screenshots are rendered from the real Compose code by the screenshot tests.)*
@@ -27,14 +27,21 @@ Send videos, photos and music from an Android phone to a TV on the same Wi-Fi �
 
 | | |
 |---|---|
-| **Pick** | System picker for video, photos and audio; pick many at once to build a queue. Thumbnails, durations, reorder, remove. |
+| **Add media** | System picker (many at once), **a whole folder** (sorted naturally, subtitles paired automatically), **web links** (.mp4/.mp3/.jpg or live **.m3u8**), and **Share → CastLite / Open with CastLite** from any app. The queue is saved and survives restarts. |
 | **Discover** | DLNA renderers via SSDP · CastLite TV apps via mDNS/NSD · "Enter TV IP" fallback (remembered). |
-| **Control** | Play / pause, seek bar, previous / next, jump to any item, stop, TV volume, re-send. |
-| **Queue & slideshow** | Videos and songs play one after another; photos advance every 3/5/8/15 s. |
-| **Protocol shown** | Every screen shows whether DLNA or the CastLite app is in use. |
-| **TV app** | ExoPlayer video & audio, photo slideshow with crossfade, full remote/D-pad support, "waiting for phone" screen with the TV's IP. |
-| **Errors** | Clear messages for unsupported codecs, files the TV refuses, Wi-Fi drops, lost TVs — with *Retry*. |
-| **Phone locked** | Keeps casting with the screen off: foreground service, renewed wake lock, lock-screen media controls, volume keys → TV volume, automatic resume after Wi-Fi drops. See [below](#when-the-phone-is-locked). |
+| **Control** | Play / pause, seek, previous / next, jump to any item, stop, TV volume, re-send, **repeat (off / all / one)**, **shuffle**. |
+| **Resume** | Long videos/songs remember where you stopped: "Continue watching? Resume at 12:34 / Start over". |
+| **Will it play?** | Each file's codecs are read on the phone and compared with what the TV can decode (CastLite TV app reports its decoders; DLNA TVs list accepted formats) → "May not play: DTS audio" *before* you cast. |
+| **Subtitles** | Add a `.srt`/`.vtt` to any video (or keep it next to the video in a folder). The CastLite TV app shows them (toggle from the phone or the remote's CC key); DLNA TVs get them best-effort. |
+| **Slideshows** | 3/5/8/15 s per photo, crossfade/slide/zoom transitions, slow pan-and-zoom, and **music behind the photos** (CastLite TV app). |
+| **Several TVs** | Tap **+** on another TV to play the same queue there too (party mode). |
+| **Power on** | Wake-on-LAN: save a TV's MAC once, then **Turn on TV** — CastLite also wakes it automatically if it doesn't answer. |
+| **Screen mirroring** | Show the whole phone screen (with sound on Android 10+) on the CastLite TV app, low-latency H.264, follows rotation. |
+| **Anywhere controls** | Lock-screen player, notification, **Quick Settings tile**, **home-screen widget**, volume keys → TV volume. |
+| **TV app** | Starts with the TV and listens in the background; **opens itself** when you cast. ExoPlayer video & audio (HLS too), photos, full remote/D-pad support. |
+| **Phone locked** | Keeps casting with the screen off and resumes after Wi-Fi drops. See [below](#when-the-phone-is-locked). |
+| **Diagnostics** | *Network & server → Send diagnostics*: one text file with what the phone and TV did, the TV's formats and recent errors. |
+| **Auto-update** | Both apps update themselves from this repo's releases. |
 
 ## Architecture
 
@@ -91,7 +98,13 @@ GET  /api/status   → {"state":"PLAYING","index":0,"count":3,"positionMs":61000
 POST /api/command  ← {"action":"load","items":[{"url":"http://…","title":"…","mimeType":"video/mp4","type":"VIDEO"}],"startIndex":0,"slideDurationMs":5000}
                      {"action":"play"} {"action":"pause"} {"action":"stop"} {"action":"next"} {"action":"previous"}
                      {"action":"seek","positionMs":90000} {"action":"jump","index":2} {"action":"volume","percent":30}
+                     {"action":"repeat","mode":"ALL"} {"action":"subtitles","enabled":false}
+GET  /api/diagnostics → plain-text device info, decoders and the TV app's log
+TCP  :8767            ← screen mirroring stream ("CLMR" header, H.264 + PCM frames; see protocol/Mirror.kt)
 ```
+
+`/api/info` also reports the TV's decoders (`capabilities`), which the phone uses for
+"may not play" warnings.
 
 You can drive a TV from a laptop with `curl`, e.g.
 `curl -d '{"action":"pause"}' http://192.168.1.60:8766/api/command`.
@@ -105,7 +118,7 @@ add a discovery source to `DeviceRepository`, and implement `CastController` wit
 ### Modules and code layout
 
 ```
-protocol/   Pure Kotlin: receiver API models, ReceiverApiServer, ReceiverClient
+protocol/   Pure Kotlin: receiver API models, ReceiverApiServer, ReceiverClient, mirror stream
 updater/    Android library: self-update from GitHub releases (both apps)
 phone/      Sender app (com.castlite.phone)
   cast/         CastController interface, CastManager, DeviceRepository, models
@@ -127,7 +140,7 @@ wire format and it can be tested end-to-end on the JVM.
 
 ## Getting the APKs (no Android Studio needed)
 
-Every push to GitHub runs the tests, builds both apps and publishes a release:
+Every push to GitHub runs the tests, builds both apps (optimized release builds) and publishes a release:
 
 **➜ [github.com/Liebe0/Castlite/releases/latest](https://github.com/Liebe0/Castlite/releases/latest)**
 
@@ -210,6 +223,37 @@ The status chip in the phone's top-right corner (*Ready* / *Idle* / *Offline*) o
 address, the server URL (open it in any browser to test without a TV), every file URL,
 and a log of what the TV requested (handy for debugging a picky TV).
 
+## Feature notes
+
+**TV app opens by itself.** The CastLite TV app runs a small background service that
+starts when the TV boots, so the phone always finds it. When you cast, it brings itself
+to the front. Android 10+ restricts apps opening on their own; if your TV refuses
+(the phone then says *"Open CastLite on the TV once…"*), allow it once from a computer:
+
+```sh
+adb shell appops set com.castlite.tv SYSTEM_ALERT_WINDOW allow
+```
+
+Pressing **Home** on the TV stops video/photos; music keeps playing in the background.
+
+**Screen mirroring** works with the CastLite TV app (choose it, then *Mirror screen*).
+Android asks for permission each time. Sound needs Android 10+ and the microphone
+permission (only the phone's playback is captured, never the mic); some apps (e.g.
+Netflix) block capture of their picture or sound. For LG TVs, use your phone's own
+*Screen Cast / Smart View* if it has one — DLNA can't mirror.
+
+**"May not play" warnings** are hints, not blocks: TVs sometimes play more (or less)
+than they report.
+
+**Several TVs** play the same queue independently, so they can drift a little apart
+on long videos; volume changes only the main TV.
+
+**Wake-on-LAN** needs the TV's MAC address (TV settings → Network) and its "Turn on via
+Wi-Fi" (LG) or "Network standby" (Android TV) option.
+
+**Quick Settings tile / widget**: pull down Quick Settings → edit (pencil) → drag
+*CastLite* in; long-press the home screen → Widgets → *CastLite*.
+
 ## When the phone is locked
 
 Turning the phone's screen off (or locking it) doesn't stop casting:
@@ -259,6 +303,8 @@ Requirements: JDK 17+ and the Android SDK (platform 35) — Android Studio cover
 | `DlnaControllerTest` | `DlnaController` against a fake UPnP renderer: load sequence, polling, seek/volume, auto-advance, interrupted vs. finished, slideshow, 701 retry, 714 errors, "TV never started", lost connection |
 | `KeepAwakePolicyTest`, `PatientLoadErrorPolicyTest` | Wake-lock idle policy, auto-resume after Wi-Fi changes, TV retry/backoff policy |
 | `UpdaterTest` | update.json parsing, version comparison, download through redirects, SHA-256/size verification, reuse |
+| `CompatibilityTest`, `MediaLibraryPersistenceTest` | "May not play" rules, DLNA format lists, Wake-on-LAN packets, resume rules, natural sort, saved queue |
+| `ProtocolV2Test`, `H264Test`, `QueuePlanTest` | New commands/fields and old-app compatibility, mirror stream framing, SPS/PPS splitting, slideshow-music planning |
 | `ProtocolTest`, `ReceiverCastControllerTest` | JSON format; phone client ↔ real TV API server end to end, errors, lost connection |
 | `QueueCursorTest`, `MediaLibraryTest`, `FileNamesTest` | Queue navigation, reordering, ids, host validation |
 | `PhoneScreensTest`, `TvScreensTest` | Render every screen (Paparazzi) |

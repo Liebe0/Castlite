@@ -2,6 +2,8 @@ package com.castlite.phone.cast
 
 import com.castlite.phone.media.CastMedia
 import com.castlite.protocol.ReceiverProtocol
+import com.castlite.protocol.RepeatMode
+import com.castlite.protocol.SlideshowOptions
 import kotlinx.serialization.Serializable
 
 /** The ways CastLite can talk to a TV. Shown in the UI so you know which one is in use. */
@@ -23,6 +25,8 @@ data class DlnaEndpoints(
     val descriptionUrl: String,
     val avTransportUrl: String,
     val renderingControlUrl: String? = null,
+    /** Used to ask the TV which file types it accepts (GetProtocolInfo). */
+    val connectionManagerUrl: String? = null,
 )
 
 /** A TV (or other renderer) found on the network or entered by hand. */
@@ -39,14 +43,22 @@ data class CastDevice(
     val receiverPort: Int = ReceiverProtocol.PORT,
     /** Added with "Enter TV IP" rather than discovered. */
     val isManual: Boolean = false,
+    /** For Wake-on-LAN ("Turn on TV"); entered by the user. */
+    val mac: String? = null,
 ) {
     /** "LG Electronics · OLED55C1" style subtitle. */
     val details: String
         get() = listOfNotNull(manufacturer, model).distinct().joinToString(" · ").ifEmpty { host }
 }
 
-/** One queue item as sent to a TV: the picked file plus the URL the TV must fetch. */
-data class QueueEntry(val media: CastMedia, val url: String)
+/** One queue item as sent to a TV: the picked file plus the URLs the TV must fetch. */
+data class QueueEntry(val media: CastMedia, val url: String, val subtitleUrl: String? = null)
+
+/** Playback options sent with a queue. */
+data class CastOptions(
+    val repeat: RepeatMode = RepeatMode.OFF,
+    val slideshow: SlideshowOptions = SlideshowOptions(),
+)
 
 enum class PlayerState { IDLE, CONNECTING, LOADING, PLAYING, PAUSED, ENDED, ERROR }
 
@@ -60,6 +72,9 @@ data class PlaybackStatus(
     val volume: Int? = null,
     /** Readable problem description when [state] is ERROR. */
     val error: String? = null,
+    val repeat: RepeatMode = RepeatMode.OFF,
+    /** null = the current item has no subtitles (or the TV can't switch them). */
+    val subtitlesEnabled: Boolean? = null,
 ) {
     val isActive: Boolean get() = state == PlayerState.PLAYING || state == PlayerState.LOADING || state == PlayerState.CONNECTING
 }

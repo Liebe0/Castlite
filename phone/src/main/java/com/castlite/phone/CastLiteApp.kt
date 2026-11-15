@@ -10,6 +10,7 @@ import coil3.SingletonImageLoader
 import coil3.request.crossfade
 import coil3.video.VideoFrameDecoder
 import com.castlite.phone.cast.CastManager
+import com.castlite.phone.media.MediaLibrary
 import com.castlite.updater.AppTarget
 import com.castlite.updater.AppUpdater
 import kotlinx.coroutines.MainScope
@@ -36,6 +37,7 @@ class CastLiteApp : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        MediaLibrary.init(java.io.File(filesDir, "queue.json")) // the queue survives restarts
         CastManager.init(this)
         updater.startAutoChecks()
         // A ready update waits until casting stops.

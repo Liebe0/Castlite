@@ -3,6 +3,7 @@ package com.castlite.phone.cast
 import com.castlite.phone.cast.dlna.DlnaController
 import com.castlite.phone.cast.googlecast.GoogleCastSupport
 import com.castlite.phone.cast.receiver.ReceiverCastController
+import com.castlite.protocol.RepeatMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 
@@ -18,11 +19,8 @@ interface CastController {
     val device: CastDevice
     val status: StateFlow<PlaybackStatus>
 
-    /**
-     * Sends the whole queue and starts playing [startIndex].
-     * @param slideDurationMs how long each photo is shown before advancing.
-     */
-    suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, slideDurationMs: Long)
+    /** Sends the whole queue and starts playing [startIndex] (at [startPositionMs]). */
+    suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, options: CastOptions)
 
     suspend fun play()
     suspend fun pause()
@@ -32,6 +30,10 @@ interface CastController {
     suspend fun next()
     suspend fun previous()
     suspend fun jumpTo(index: Int)
+    suspend fun setRepeat(mode: RepeatMode)
+
+    /** Show/hide subtitles; throws [CastException] if the TV can't switch them. */
+    suspend fun setSubtitles(enabled: Boolean)
 
     /** Stops polling and frees resources. Does not stop the TV. */
     fun release()

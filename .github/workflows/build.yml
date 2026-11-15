@@ -37,14 +37,15 @@ jobs:
         run: ./gradlew --stacktrace :protocol:test :updater:testDebugUnitTest :phone:recordPaparazziDebug :tv:recordPaparazziDebug
 
       # versionCode = 100 + run number (read from GITHUB_RUN_NUMBER in build.gradle.kts).
-      - name: Build debug APKs
-        run: ./gradlew --stacktrace :phone:assembleDebug :tv:assembleDebug
+      # Release builds (not debuggable = faster), signed with the same key as before.
+      - name: Build release APKs
+        run: ./gradlew --stacktrace :phone:assembleRelease :tv:assembleRelease
 
       - name: Collect APKs
         run: |
           mkdir -p out
-          cp phone/build/outputs/apk/debug/phone-debug.apk out/CastLite-phone.apk
-          cp tv/build/outputs/apk/debug/tv-debug.apk out/CastLite-TV.apk
+          cp phone/build/outputs/apk/release/phone-release.apk out/CastLite-phone.apk
+          cp tv/build/outputs/apk/release/tv-release.apk out/CastLite-TV.apk
 
       - name: Upload phone APK
         uses: actions/upload-artifact@v4

@@ -2,4 +2,6 @@
     <string name="app_name">CastLite</string>
     <string name="notification_channel_name">Casting</string>
     <string name="notification_channel_desc">Shown while CastLite is sharing media with a TV</string>
+    <string name="widget_description">Control what\'s playing on your TV</string>
+    <string name="tile_label">CastLite</string>
 </resources>

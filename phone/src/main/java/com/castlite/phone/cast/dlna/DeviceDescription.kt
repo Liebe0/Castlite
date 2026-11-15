@@ -14,11 +14,13 @@ data class RendererDescription(
     val modelName: String?,
     val avTransportControlUrl: String,
     val renderingControlUrl: String?,
+    val connectionManagerUrl: String? = null,
 )
 
 object DeviceDescriptionParser {
     const val AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport"
     const val RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl"
+    const val CONNECTION_MANAGER = "urn:schemas-upnp-org:service:ConnectionManager"
 
     /**
      * Parses the XML found at an SSDP LOCATION. The renderer may be the root device or
@@ -43,6 +45,7 @@ object DeviceDescriptionParser {
                 modelName = device.childText("modelName"),
                 avTransportControlUrl = avTransport,
                 renderingControlUrl = controlUrlOf(RENDERING_CONTROL),
+                connectionManagerUrl = controlUrlOf(CONNECTION_MANAGER),
             )
         }
         return null

@@ -6,7 +6,10 @@ import com.castlite.phone.cast.CastException
 import com.castlite.phone.cast.PlaybackStatus
 import com.castlite.phone.cast.PlayerState
 import com.castlite.phone.cast.QueueEntry
+import com.castlite.phone.cast.CastOptions
+import com.castlite.phone.diagnostics.Diag
 import com.castlite.phone.media.MediaKind
+import com.castlite.protocol.RepeatMode
 import com.castlite.protocol.Command
 import com.castlite.protocol.MediaType
 import com.castlite.protocol.QueueItem
@@ -45,7 +48,7 @@ class ReceiverCastController(
     private var pollJob: Job? = null
     private var failures = 0
 
-    override suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, slideDurationMs: Long) {
+    override suspend fun load(queue: List<QueueEntry>, startIndex: Int, startPositionMs: Long, options: CastOptions) {
         val items = queue.map { e ->
             QueueItem(
                 url = e.url,
@@ -57,9 +60,12 @@ class ReceiverCastController(
                     else -> MediaType.VIDEO
                 },
                 durationMs = e.media.durationMs,
+                subtitleUrl = e.subtitleUrl,
+                subtitleMimeType = e.media.subtitle?.mimeType,
             )
         }
-        send(Command.Load(items, startIndex, startPositionMs, slideDurationMs))
+        Diag.log("receiver", "${device.name}: load ${items.size} item(s) from #$startIndex at ${startPositionMs}ms, repeat=${options.repeat}")
+        send(Command.Load(items, startIndex, startPositionMs, options.slideshow.durationMs, options.repeat, options.slideshow))
         startPolling()
     }
 
@@ -71,6 +77,8 @@ class ReceiverCastController(
     override suspend fun next() = send(Command.Next)
     override suspend fun previous() = send(Command.Previous)
     override suspend fun jumpTo(index: Int) = send(Command.JumpTo(index))
+    override suspend fun setRepeat(mode: RepeatMode) = send(Command.SetRepeat(mode))
+    override suspend fun setSubtitles(enabled: Boolean) = send(Command.SetSubtitles(enabled))
 
     override fun release() {
         pollJob?.cancel()
@@ -105,6 +113,7 @@ class ReceiverCastController(
         try {
             block()
         } catch (e: ReceiverException) {
+            Diag.log("receiver", "${device.name} refused: ${e.message}")
             throw CastException(e.message ?: "The TV refused the command", e)
         } catch (e: ConnectException) {
             throw CastException("Can't reach ${device.name}. Open the CastLite app on the TV.", e)
@@ -129,5 +138,7 @@ class ReceiverCastController(
         durationMs = durationMs,
         volume = volumePercent,
         error = error,
+        repeat = repeat,
+        subtitlesEnabled = subtitlesEnabled,
     )
 }

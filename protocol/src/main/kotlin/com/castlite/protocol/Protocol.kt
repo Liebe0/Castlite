@@ -20,8 +20,8 @@ object ReceiverProtocol {
     /** Fixed port of the TV app's API, so "enter TV IP" needs only the IP. */
     const val PORT = 8766
 
-    /** Bumped on incompatible changes; the phone warns if the TV app is older. */
-    const val API_VERSION = 1
+    /** Bumped when features are added; fields added later always have defaults. */
+    const val API_VERSION = 2
 
     /** DNS-SD service type the TV advertises over mDNS (NSD). */
     const val NSD_SERVICE_TYPE = "_castlite._tcp"
@@ -29,6 +29,8 @@ object ReceiverProtocol {
     const val PATH_INFO = "/api/info"
     const val PATH_STATUS = "/api/status"
     const val PATH_COMMAND = "/api/command"
+    /** Plain-text log + device info, for "Send diagnostics" on the phone. */
+    const val PATH_DIAGNOSTICS = "/api/diagnostics"
 
     /** Shared JSON configuration: tolerant of unknown fields so old/new apps interoperate. */
     val json = Json {
@@ -51,6 +53,27 @@ data class QueueItem(
     val mimeType: String,
     val type: MediaType,
     val durationMs: Long = 0,
+    /** External subtitles (SubRip or WebVTT) served by the phone, if any. */
+    val subtitleUrl: String? = null,
+    val subtitleMimeType: String? = null,
+)
+
+/** What happens at the end of an item / the queue. */
+@Serializable
+enum class RepeatMode { OFF, ALL, ONE }
+
+/** How photos change during a slideshow (CastLite TV app). */
+@Serializable
+enum class SlideTransition { CROSSFADE, SLIDE, ZOOM }
+
+@Serializable
+data class SlideshowOptions(
+    val durationMs: Long = 5_000,
+    val transition: SlideTransition = SlideTransition.CROSSFADE,
+    /** Slow pan-and-zoom on each photo. */
+    val kenBurns: Boolean = true,
+    /** Play the queue's audio files as background music while the photos change. */
+    val music: Boolean = false,
 )
 
 /** Commands the phone sends. The JSON "action" field selects the type. */
@@ -64,8 +87,10 @@ sealed interface Command {
         val items: List<QueueItem>,
         val startIndex: Int = 0,
         val startPositionMs: Long = 0,
-        /** How long each photo stays on screen during a slideshow. */
+        /** How long each photo stays on screen (kept for older TV apps; see [slideshow]). */
         val slideDurationMs: Long = 5_000,
+        val repeat: RepeatMode = RepeatMode.OFF,
+        val slideshow: SlideshowOptions? = null,
     ) : Command
 
     @Serializable @SerialName("play") data object Play : Command
@@ -85,6 +110,14 @@ sealed interface Command {
     @Serializable
     @SerialName("volume")
     data class SetVolume(val percent: Int) : Command
+
+    @Serializable
+    @SerialName("repeat")
+    data class SetRepeat(val mode: RepeatMode) : Command
+
+    @Serializable
+    @SerialName("subtitles")
+    data class SetSubtitles(val enabled: Boolean) : Command
 }
 
 @Serializable
@@ -105,6 +138,25 @@ data class ReceiverStatus(
     val type: MediaType? = null,
     /** Human-readable problem (codec unsupported, phone unreachable, ...). */
     val error: String? = null,
+    val repeat: RepeatMode = RepeatMode.OFF,
+    /** null = the current item has no subtitles. */
+    val subtitlesEnabled: Boolean? = null,
+    /** True while the TV shows the phone's screen (mirroring). */
+    val mirroring: Boolean = false,
+)
+
+/**
+ * What the TV's hardware can decode, so the phone can warn before casting a file the
+ * TV can't play. Codec names are MIME types, e.g. "video/hevc", "audio/ac3".
+ */
+@Serializable
+data class Capabilities(
+    val videoCodecs: List<String> = emptyList(),
+    val audioCodecs: List<String> = emptyList(),
+    /** 10-bit HEVC (most HDR phone videos). */
+    val hevcMain10: Boolean = false,
+    /** Largest video height any decoder supports (e.g. 2160 for 4K). */
+    val maxVideoHeight: Int = 1080,
 )
 
 /** Identity of a receiver; used to confirm a manually entered IP really is a CastLite TV. */
@@ -115,6 +167,9 @@ data class ReceiverInfo(
     val appVersion: String,
     val apiVersion: Int = ReceiverProtocol.API_VERSION,
     val app: String = "castlite-tv",
+    val capabilities: Capabilities? = null,
+    /** TCP port for screen mirroring, if supported. */
+    val mirrorPort: Int? = null,
 )
 
 @Serializable

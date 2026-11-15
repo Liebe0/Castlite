@@ -25,6 +25,13 @@ class ReceiverClient(
     fun status(): ReceiverStatus =
         ReceiverProtocol.json.decodeFromString(ReceiverStatus.serializer(), get(ReceiverProtocol.PATH_STATUS))
 
+    /** The TV app's own log and device info (empty for old TV apps). */
+    fun diagnostics(): String = try {
+        get(ReceiverProtocol.PATH_DIAGNOSTICS)
+    } catch (e: IOException) {
+        "(TV diagnostics unavailable: ${e.message})"
+    }
+
     /** Sends [command]; returns the TV's status right after executing it. */
     fun send(command: Command): ReceiverStatus {
         val body = ReceiverProtocol.json.encodeToString(Command.serializer(), command)

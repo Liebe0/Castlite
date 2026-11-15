@@ -39,9 +39,12 @@ class PhoneScreensTest {
 
     private val lan = LanStatus(LanStatus.Kind.WIFI, "192.168.1.23")
     private val media = listOf(
-        CastMedia("a1", "content://m/1", "Summer in Lisbon.mp4", "Summer_in_Lisbon.mp4", "video/mp4", 734_003_200, 754_000),
+        CastMedia("a1", "content://m/1", "Summer in Lisbon.mp4", "Summer_in_Lisbon.mp4", "video/mp4", 734_003_200, 754_000,
+            subtitle = com.castlite.phone.media.SubtitleRef("content://s", "Summer in Lisbon.srt", "application/x-subrip"),
+            info = com.castlite.phone.media.MediaInfo("video/avc", listOf("audio/mp4a-latm"), 1920, 1080)),
         CastMedia("a2", "content://m/2", "Beach sunset.jpg", "Beach_sunset.jpg", "image/jpeg", 4_200_000),
-        CastMedia("a3", "content://m/3", "Birthday party.mkv", "Birthday_party.mkv", "video/x-matroska", 1_288_490_188, 2_710_000),
+        CastMedia("a3", "content://m/3", "Birthday party.mkv", "Birthday_party.mkv", "video/x-matroska", 1_288_490_188, 2_710_000,
+            info = com.castlite.phone.media.MediaInfo("video/hevc", listOf("audio/vnd.dts"), 3840, 2160, tenBit = true)),
         CastMedia("a4", "content://m/4", "Road trip playlist – 01.mp3", "Road_trip_playlist_01.mp3", "audio/mpeg", 8_100_000, 214_000),
         CastMedia("a5", "content://m/5", "Family portrait.heic", "Family_portrait.heic", "image/heic", 2_900_000),
     )
@@ -59,7 +62,30 @@ class PhoneScreensTest {
     }
 
     @Test fun home_queue() = shot {
-        HomeScreen(MainUiState(lan = lan, server = ServerState.Running(8765), media = media, selectedDevice = lg), HomeActions())
+        HomeScreen(
+            MainUiState(
+                lan = lan, server = ServerState.Running(8765), media = media, selectedDevice = lg,
+                macs = mapOf(lg.id to "A1:B2:C3:D4:E5:F6"), repeat = com.castlite.protocol.RepeatMode.ALL,
+                support = com.castlite.phone.media.TvSupport(containers = setOf("video/mp4", "audio/mpeg", "image/jpeg", "image/heic"), isDlna = true),
+            ),
+            HomeActions(),
+        )
+    }
+
+    @Test fun home_resume_prompt() = shot {
+        HomeScreen(
+            MainUiState(lan = lan, server = ServerState.Running(8765), media = media, selectedDevice = shield,
+                resumePrompt = com.castlite.phone.ui.ResumePrompt(0, 312_000, "Summer in Lisbon.mp4")),
+            HomeActions(),
+        )
+    }
+
+    @Test fun home_mirroring() = shot {
+        HomeScreen(
+            MainUiState(lan = lan, server = ServerState.Running(8765), media = media.take(2), selectedDevice = shield,
+                mirror = com.castlite.phone.mirror.MirrorUiState.Active("Living Room Shield", 720, 1280, true)),
+            HomeActions(),
+        )
     }
 
     @Test fun home_casting() = shot {
@@ -102,7 +128,8 @@ class PhoneScreensTest {
 
     @Test fun player_video() = shot {
         NowPlayingScreen(
-            CastSession(lg, media, PlaybackStatus(PlayerState.PLAYING, index = 0, positionMs = 312_000, durationMs = 754_000, volume = 35)),
+            CastSession(shield, media, PlaybackStatus(PlayerState.PLAYING, index = 0, positionMs = 312_000, durationMs = 754_000, volume = 35,
+                repeat = com.castlite.protocol.RepeatMode.ALL, subtitlesEnabled = true), extraDevices = listOf(lg)),
             5_000, PlayerActions(),
         )
     }
@@ -128,7 +155,7 @@ class PhoneScreensTest {
                     CastDevice("uuid:sam", "Samsung Q60 Series (55)", CastProtocol.DLNA, "192.168.1.51", "Samsung Electronics", "QE55Q60"),
                     CastDevice("castlite:192.168.1.70", "Bedroom TV", CastProtocol.CASTLITE, "192.168.1.70", "CastLite TV app", "Chromecast HD", isManual = true),
                 ),
-                selectedId = lg.id, lan = lan,
+                selectedId = lg.id, lan = lan, extraIds = setOf(shield.id),
             ),
             DevicesActions(),
         )

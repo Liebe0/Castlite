@@ -87,9 +87,22 @@ class TvScreensTest {
         AudioScreen(TvUiState(item = song, index = 3, count = 5, state = ReceiverState.PLAYING, positionMs = 81_000, durationMs = 214_000))
     }
 
+    @Test fun mirror() = shot {
+        com.castlite.tv.ui.MirrorScreen(com.castlite.tv.mirror.MirrorState(active = true, phone = "192.168.1.23", width = 720, height = 1280, hasAudio = true)) { m ->
+            Box(m.background(Brush.verticalGradient(listOf(Color(0xFF1B2A4E), Color(0xFF6A3093)))))
+        }
+    }
+
+    @Test fun video_subtitles_overlay() = shot {
+        VideoScreen(
+            TvUiState(item = video.copy(subtitleUrl = "s"), index = 0, count = 5, state = ReceiverState.PLAYING, positionMs = 312_000, durationMs = 754_000,
+                overlayVisible = true, phone = "192.168.1.23", subtitlesEnabled = true),
+        ) { FakeFrame() }
+    }
+
     @Test fun photo_overlay() = shot {
         Box {
-            PhotoScreen(TvUiState(item = photo, index = 1, count = 5, state = ReceiverState.PAUSED, overlayVisible = true), { }, { _, _ -> })
+            PhotoScreen(TvUiState(item = photo, index = 1, count = 5, state = ReceiverState.PAUSED, overlayVisible = true, musicTitle = "Golden Hour – Road trip"), { }, { _, _ -> })
         }
     }
 
